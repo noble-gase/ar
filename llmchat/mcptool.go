@@ -12,12 +12,13 @@ import (
 )
 
 type MCPAgent struct {
-	Name            string
+	Name string
+	// Endpoint is the URL of MCP server based on Streamable HTTP.
 	Endpoint        string
 	Description     string
 	Instruction     string
 	MaxOutputTokens int
-	// LLMAdapter specifies the model for the MCP-Agent, if not specified, the root agent model will be used.
+	// LLMAdapter specifies the model for MCP-Agent, if not specified, the root agent model will be used.
 	LLMAdapter LLMAdapter
 }
 

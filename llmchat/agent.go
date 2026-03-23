@@ -15,8 +15,8 @@ type NormalConfig struct {
 	Description     string
 	Instruction     string
 	LLMAdapter      LLMAdapter
-	MCPServers      []string
-	FuncTools       []FuncToolBuilder
+	MCPServers      []string // Streamable HTTP
+	FuncTools       []ToolBuilder
 	MaxOutputTokens int
 }
 
@@ -40,7 +40,7 @@ func NewNormalAgent(cfg *NormalConfig) (agent.Agent, error) {
 	// Func Tools
 	tools := make([]tool.Tool, 0, len(cfg.FuncTools))
 	for _, builder := range cfg.FuncTools {
-		tool, err := builder.build()
+		tool, err := builder.Build()
 		if err != nil {
 			return nil, err
 		}
@@ -90,9 +90,9 @@ func NewMultiToolAgent(cfg *AgentToolConfig) (agent.Agent, error) {
 	// MCP Tools
 	tools := make([]tool.Tool, 0, len(cfg.MCPAgents))
 	for _, v := range cfg.MCPAgents {
-		tool, err := NewMCPTool(llmModel, v)
-		if err != nil {
-			return nil, err
+		tool, _err := NewMCPTool(llmModel, v)
+		if _err != nil {
+			return nil, _err
 		}
 		tools = append(tools, tool)
 	}

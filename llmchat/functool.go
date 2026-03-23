@@ -9,8 +9,8 @@ import (
 	"google.golang.org/genai"
 )
 
-type FuncToolBuilder interface {
-	build() (tool.Tool, error)
+type ToolBuilder interface {
+	Build() (tool.Tool, error)
 }
 
 type FuncTool[TArgs, TResults any] struct {
@@ -19,7 +19,7 @@ type FuncTool[TArgs, TResults any] struct {
 	Handler     functiontool.Func[TArgs, TResults]
 }
 
-func (f *FuncTool[TArgs, TResults]) build() (tool.Tool, error) {
+func (f *FuncTool[TArgs, TResults]) Build() (tool.Tool, error) {
 	return functiontool.New(functiontool.Config{
 		Name:        f.Name,
 		Description: f.Description,
@@ -31,15 +31,15 @@ type FuncAgent struct {
 	Description     string
 	Instruction     string
 	MaxOutputTokens int
-	Tools           []FuncToolBuilder
-	// LLMAdapter specifies the model for the Func-Agent, if not specified, the root agent model will be used.
+	Tools           []ToolBuilder
+	// LLMAdapter specifies the model for Func-Agent, if not specified, the root agent model will be used.
 	LLMAdapter LLMAdapter
 }
 
 func NewFuncTool(rootModel model.LLM, cfg *FuncAgent) (tool.Tool, error) {
 	tools := make([]tool.Tool, 0, len(cfg.Tools))
 	for _, v := range cfg.Tools {
-		t, err := v.build()
+		t, err := v.Build()
 		if err != nil {
 			return nil, err
 		}
