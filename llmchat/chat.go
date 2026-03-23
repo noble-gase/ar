@@ -31,10 +31,7 @@ func (c *Chat) Ask(ctx context.Context, userId, text string) (iter.Seq2[*adk_ses
 		return nil, err
 	}
 
-	return c.runner.Run(
-		ctx,
-		uid,
-		sid,
+	return c.runner.Run(ctx, uid, sid,
 		genai.NewContentFromText(text, genai.RoleUser),
 		agent.RunConfig{
 			StreamingMode: agent.StreamingModeSSE,
