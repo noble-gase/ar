@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/noble-gase/ar/llmchat"
+	"github.com/noble-gase/ne/helper"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/chatbot"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
-	"gomod.sunmi.com/gomoddepend/golib/helper"
 )
 
 type Bot struct {
@@ -32,9 +33,9 @@ func (b *Bot) Stop() {
 }
 
 func (b *Bot) messageHandler(ctx context.Context, data *chatbot.BotCallbackDataModel) ([]byte, error) {
-	ctx = helper.NewTraceIdCtx(ctx)
+	ctx = helper.CtxWithTraceId(ctx)
 
-	helper.LogInfo(ctx, "dingtalk message", helper.Json("data", data))
+	slog.InfoContext(ctx, "dingtalk message", slog.Any("data", data))
 
 	var (
 		outTrackId string
@@ -46,7 +47,6 @@ func (b *Bot) messageHandler(ctx context.Context, data *chatbot.BotCallbackDataM
 		outTrackId, err = b.card.CreateAndDeliverRobot(ctx, data.SenderStaffId, "> 思考中...")
 	}
 	if err != nil {
-		helper.LogErr(ctx, err)
 		_ = b.reply(ctx, data.SessionWebhook, "抱歉，处理时出错了："+err.Error())
 		return nil, nil
 	}

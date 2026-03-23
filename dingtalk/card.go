@@ -2,20 +2,21 @@ package dingtalk
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	dingtalkcard "github.com/alibabacloud-go/dingtalk/card_1_0"
 	util "github.com/alibabacloud-go/tea-utils/v2/service"
 	"github.com/alibabacloud-go/tea/tea"
-	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	"github.com/noble-gase/ne/helper"
+	"github.com/noble-gase/ne/redlock"
 	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
-	"gomod.sunmi.com/gomoddepend/golib/helper"
-	"gomod.sunmi.com/gomoddepend/golib/redlock"
 )
 
 type AccessToken struct {
@@ -126,7 +127,7 @@ func (s *CardSender) CreateAndDeliverGroup(ctx context.Context, userId, conversa
 func (s *CardSender) StreamingUpdate(ctx context.Context, outTrackId, content string, finished bool) {
 	accessToken, err := s.loadAccessToken(ctx)
 	if err != nil {
-		helper.LogErr(ctx, err, helper.Attr("outTrackId", outTrackId))
+		slog.ErrorContext(ctx, "[dingtalk card] load access_token failed", slog.String("outTrackId", outTrackId), slog.String("error", err.Error()))
 		return
 	}
 	request := &dingtalkcard.StreamingUpdateRequest{
@@ -145,7 +146,7 @@ func (s *CardSender) StreamingUpdate(ctx context.Context, outTrackId, content st
 
 	_, err = s.card.StreamingUpdateWithOptions(request, headers, &util.RuntimeOptions{})
 	if err != nil {
-		helper.LogErr(ctx, err, helper.Attr("outTrackId", outTrackId))
+		slog.ErrorContext(ctx, "[dingtalk card] update stream failed", slog.String("outTrackId", outTrackId), slog.String("error", err.Error()))
 	}
 }
 
@@ -166,7 +167,7 @@ func (s *CardSender) refreshAccessToken(ctx context.Context) {
 
 	str, err := s.reduc.Get(ctx, s.tokenKey).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
-		helper.LogErr(ctx, err, helper.Attr("key", s.tokenKey))
+		slog.ErrorContext(ctx, "[dingtalk card] redis get access_token failed", slog.String("key", s.tokenKey), slog.String("error", err.Error()))
 		return
 	}
 	if len(str) != 0 {
@@ -184,14 +185,14 @@ func (s *CardSender) refreshAccessToken(ctx context.Context) {
 		}).
 		Post("https://api.dingtalk.com/v1.0/oauth2/accessToken")
 	if err != nil {
-		helper.LogErr(ctx, err, helper.Attr("clientId", s.clientId), helper.Attr("clientSecret", s.clientSecret))
+		slog.ErrorContext(ctx, "[dingtalk card] refresh access_token failed", slog.String("clientId", s.clientId), slog.String("clientSecret", s.clientSecret), slog.String("error", err.Error()))
 		return
 	}
 
-	helper.LogInfo(ctx, "RefreshAccessToken", helper.Attr("clientId", s.clientId), helper.Attr("clientSecret", s.clientSecret), helper.Attr("response", resp.String()))
+	slog.InfoContext(ctx, "[dingtalk card] refresh access_token", slog.String("clientId", s.clientId), slog.String("clientSecret", s.clientSecret), slog.String("response", resp.String()))
 
 	if !resp.IsSuccess() {
-		helper.LogErr(ctx, errors.New(resp.Status()), helper.Attr("clientId", s.clientId), helper.Attr("clientSecret", s.clientSecret))
+		slog.ErrorContext(ctx, "[dingtalk card] refresh access_token failed", slog.String("clientId", s.clientId), slog.String("clientSecret", s.clientSecret), slog.String("error", resp.Status()))
 		return
 	}
 
@@ -200,9 +201,9 @@ func (s *CardSender) refreshAccessToken(ctx context.Context) {
 		Token:     ret.Get("accessToken").String(),
 		ExpiredAt: time.Now().Unix() + ret.Get("expireIn").Int(),
 	}
-	value, _ := sonic.MarshalString(at)
-	if err := s.reduc.Set(ctx, s.tokenKey, value, 0).Err(); err != nil {
-		helper.LogErr(ctx, err, helper.Attr("key", s.tokenKey), helper.Attr("value", value))
+	b, _ := json.Marshal(at)
+	if err := s.reduc.Set(ctx, s.tokenKey, string(b), 0).Err(); err != nil {
+		slog.ErrorContext(ctx, "[dingtalk card] redis set access_token failed", slog.String("key", s.tokenKey), slog.String("value", string(b)), slog.String("error", err.Error()))
 	}
 }
 
@@ -221,7 +222,7 @@ func NewCardSender(clientId, clientSecret, cardTemplateId string, uc redis.Unive
 		templateId:   cardTemplateId,
 
 		lockKey:  fmt.Sprintf("mutex:dingtalk:refresh_access_token:%s", clientId),
-		tokenKey: fmt.Sprintf("agent:dingtalk:access_token:%s", clientId),
+		tokenKey: fmt.Sprintf("assistant:dingtalk:access_token:%s", clientId),
 
 		card:  client,
 		reduc: uc,

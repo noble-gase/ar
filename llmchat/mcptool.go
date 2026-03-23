@@ -2,7 +2,7 @@ package llmchat
 
 import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"gomod.sunmi.com/gomoddepend/golib/helper"
+	"github.com/noble-gase/ne/helper"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/tool"

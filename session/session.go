@@ -3,15 +3,16 @@ package session
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/noble-gase/ne/helper"
+	"github.com/noble-gase/ne/redkit"
 	"github.com/redis/go-redis/v9"
-	"github.com/sunmi-OS/gocore/v2/glog"
-	"gomod.sunmi.com/gomoddepend/golib/helper"
-	"gomod.sunmi.com/gomoddepend/golib/redkit"
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/session/database"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type Session struct {
@@ -85,7 +86,11 @@ func (s *Session) createSession(ctx context.Context, userId string) (string, err
 
 func New(name string, db gorm.Dialector, uc redis.UniversalClient) (*Session, error) {
 	svc, err := database.NewSessionService(db, &gorm.Config{
-		Logger: glog.NewDBLogger(true, time.Second),
+		Logger: logger.NewSlogLogger(slog.Default(), logger.Config{
+			SlowThreshold:             time.Second,
+			LogLevel:                  logger.Info,
+			IgnoreRecordNotFoundError: true,
+		}),
 	})
 	if err != nil {
 		return nil, err
