@@ -1,8 +1,6 @@
 # 氩-Ar
 
-[氩-Ar] Assistant Development Kit (ADK) for Go
-
-AI智能助手开发库
+[氩-Ar] AI智能助手开发库
 
 > 当前仅支持「钉钉」
 
