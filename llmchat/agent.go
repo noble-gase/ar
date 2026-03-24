@@ -7,17 +7,27 @@ import (
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/mcptoolset"
-	"google.golang.org/genai"
 )
 
+type ToolCallback struct {
+	Before []llmagent.BeforeToolCallback
+	After  []llmagent.AfterToolCallback
+}
+
+type ModelCallback struct {
+	Before []llmagent.BeforeModelCallback
+	After  []llmagent.AfterModelCallback
+}
+
 type NormalConfig struct {
-	Name            string
-	Description     string
-	Instruction     string
-	LLMAdapter      LLMAdapter
-	MCPServers      []string // Streamable HTTP
-	FuncTools       []ToolBuilder
-	MaxOutputTokens int
+	Name        string
+	Description string
+	Instruction string
+	LLMAdapter  LLMAdapter
+	MCPServers  []string // Streamable HTTP
+	FuncTools   []ToolBuilder
+	ToolHooks   ToolCallback
+	ModelHooks  ModelCallback
 }
 
 func NewNormalAgent(cfg *NormalConfig) (agent.Agent, error) {
@@ -55,15 +65,16 @@ func NewNormalAgent(cfg *NormalConfig) (agent.Agent, error) {
 
 	// LLM Agent
 	llmAgent, err := llmagent.New(llmagent.Config{
-		Name:        cfg.Name,
-		Model:       llmModel,
-		Description: cfg.Description,
-		Instruction: cfg.Instruction,
-		Tools:       tools,
-		Toolsets:    toolsets,
-		GenerateContentConfig: &genai.GenerateContentConfig{
-			MaxOutputTokens: int32(cfg.MaxOutputTokens),
-		},
+		Name:                 cfg.Name,
+		Model:                llmModel,
+		Description:          cfg.Description,
+		Instruction:          cfg.Instruction,
+		Tools:                tools,
+		Toolsets:             toolsets,
+		BeforeToolCallbacks:  cfg.ToolHooks.Before,
+		AfterToolCallbacks:   cfg.ToolHooks.After,
+		BeforeModelCallbacks: cfg.ModelHooks.Before,
+		AfterModelCallbacks:  cfg.ModelHooks.After,
 	})
 	if err != nil {
 		return nil, err
@@ -78,6 +89,8 @@ type AgentToolConfig struct {
 	LLMAdapter  LLMAdapter
 	MCPAgents   []*MCPAgent
 	FuncAgents  []*FuncAgent
+	ToolHooks   ToolCallback
+	ModelHooks  ModelCallback
 }
 
 func NewMultiToolAgent(cfg *AgentToolConfig) (agent.Agent, error) {
@@ -108,11 +121,15 @@ func NewMultiToolAgent(cfg *AgentToolConfig) (agent.Agent, error) {
 
 	// LLM Agent
 	llmAgent, err := llmagent.New(llmagent.Config{
-		Name:        cfg.Name,
-		Model:       llmModel,
-		Description: cfg.Description,
-		Instruction: cfg.Instruction,
-		Tools:       tools,
+		Name:                 cfg.Name,
+		Model:                llmModel,
+		Description:          cfg.Description,
+		Instruction:          cfg.Instruction,
+		Tools:                tools,
+		BeforeToolCallbacks:  cfg.ToolHooks.Before,
+		AfterToolCallbacks:   cfg.ToolHooks.After,
+		BeforeModelCallbacks: cfg.ModelHooks.Before,
+		AfterModelCallbacks:  cfg.ModelHooks.After,
 	})
 	if err != nil {
 		return nil, err

@@ -21,9 +21,9 @@ go get github.com/noble-gase/ar
 package main
 
 import (
-	"github.com/achetronic/adk-utils-go/genai/openai"
 	"github.com/noble-gase/ar"
 	"github.com/noble-gase/ar/llmchat"
+	"github.com/noble-gase/ar/model/openai"
 )
 
 func main() {
@@ -46,7 +46,6 @@ func main() {
 			},
 		},
 		MCPServers: []string{"http://localhost:8080/mcp/iotlink"},
-		MaxOutputTokens: 1024,
 	}
 	chat, err := ar.NewNormalChat("IOTA-Agent", db, redis, cfg)
 	if err != nil {
@@ -75,9 +74,9 @@ func main() {
 package main
 
 import (
-	"github.com/achetronic/adk-utils-go/genai/openai"
 	"github.com/noble-gase/ar"
 	"github.com/noble-gase/ar/llmchat"
+	"github.com/noble-gase/ar/model/openai"
 )
 
 func main() {
@@ -107,7 +106,6 @@ func main() {
 - 不要凭自身知识回答问题，必须通过工具获取正确的信息
 - 如果用户的问题与工具列表范围无关，请告知用户无法处理
 - 遇到工具不能处理的问题，请如实告知，并让用户找「xxx」确认`,
-				MaxOutputTokens: 1024,
 			},
 		},
 	}

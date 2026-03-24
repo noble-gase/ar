@@ -3,8 +3,8 @@ package llmchat
 import (
 	"context"
 
-	"github.com/achetronic/adk-utils-go/genai/anthropic"
-	"github.com/achetronic/adk-utils-go/genai/openai"
+	"github.com/noble-gase/ar/model/anthropic"
+	"github.com/noble-gase/ar/model/openai"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/model/gemini"
 	"google.golang.org/genai"
@@ -21,7 +21,7 @@ type OpenAI struct {
 }
 
 func (o *OpenAI) Model() (model.LLM, error) {
-	return openai.New(o.Config), nil
+	return openai.NewModel(o.Config), nil
 }
 
 // Anthropic is an adapter for the Anthropic compatible model
@@ -30,7 +30,7 @@ type Anthropic struct {
 }
 
 func (a *Anthropic) Model() (model.LLM, error) {
-	return anthropic.New(a.Config), nil
+	return anthropic.NewModel(a.Config), nil
 }
 
 // Gemini is an adapter for the Gemini compatible model

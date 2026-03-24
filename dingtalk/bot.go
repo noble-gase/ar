@@ -47,6 +47,7 @@ func (b *Bot) messageHandler(ctx context.Context, data *chatbot.BotCallbackDataM
 		outTrackId, err = b.card.CreateAndDeliverRobot(ctx, data.SenderStaffId, "> 思考中...")
 	}
 	if err != nil {
+		slog.ErrorContext(ctx, "[dingtalk bot] card create failed", slog.String("error", err.Error()))
 		_ = b.reply(ctx, data.SessionWebhook, "抱歉，处理时出错了："+err.Error())
 		return nil, nil
 	}

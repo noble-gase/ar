@@ -185,14 +185,14 @@ func (s *CardSender) refreshAccessToken(ctx context.Context) {
 		}).
 		Post("https://api.dingtalk.com/v1.0/oauth2/accessToken")
 	if err != nil {
-		slog.ErrorContext(ctx, "[dingtalk card] refresh access_token failed", slog.String("clientId", s.clientId), slog.String("clientSecret", s.clientSecret), slog.String("error", err.Error()))
+		slog.ErrorContext(ctx, "[dingtalk card] refresh access_token failed", slog.String("error", err.Error()))
 		return
 	}
 
-	slog.InfoContext(ctx, "[dingtalk card] refresh access_token", slog.String("clientId", s.clientId), slog.String("clientSecret", s.clientSecret), slog.String("response", resp.String()))
+	slog.InfoContext(ctx, "[dingtalk card] refresh access_token", slog.String("response", resp.String()))
 
 	if !resp.IsSuccess() {
-		slog.ErrorContext(ctx, "[dingtalk card] refresh access_token failed", slog.String("clientId", s.clientId), slog.String("clientSecret", s.clientSecret), slog.String("error", resp.Status()))
+		slog.ErrorContext(ctx, "[dingtalk card] refresh access_token failed", slog.String("error", resp.Status()))
 		return
 	}
 
@@ -221,8 +221,8 @@ func NewCardSender(clientId, clientSecret, cardTemplateId string, uc redis.Unive
 		clientSecret: clientSecret,
 		templateId:   cardTemplateId,
 
-		lockKey:  fmt.Sprintf("mutex:dingtalk:refresh_access_token:%s", clientId),
-		tokenKey: fmt.Sprintf("assistant:dingtalk:access_token:%s", clientId),
+		lockKey:  fmt.Sprintf("mutex:dingtalk:refresh_token:%s", clientId),
+		tokenKey: fmt.Sprintf("agent:dingtalk:access_token:%s", clientId),
 
 		card:  client,
 		reduc: uc,
