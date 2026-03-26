@@ -2,8 +2,6 @@
 
 [氩-Ar] AI智能助手开发库｜Assistant Development Kit (ADK) for Go
 
-> 当前仅支持「钉钉」
-
 ## Install
 
 ```shell
@@ -27,8 +25,7 @@ import (
 )
 
 func main() {
-	// llmchat
-	cfg := &llmchat.NormalConfig{
+	builder := &llmchat.NormalAgent{
 		Name: "iota",
 		Description: "IOTA智能助手",
 		Instruction: `你是一个企业内部智能助手。
@@ -45,9 +42,11 @@ func main() {
 				ModelName: "glm-5",
 			},
 		},
-		MCPServers: []string{"http://localhost:8080/mcp/iotlink"},
+		Endpoints: []string{"http://localhost:8080/mcp/iotlink"},
 	}
-	chat, err := ar.NewNormalChat("IOTA-Agent", db, redis, cfg)
+
+	// llmchat
+	chat, err := ar.NewLLMChat("IOTA-Agent", db, redis, builder)
 	if err != nil {
 		panic(err)
 	}
@@ -80,8 +79,7 @@ import (
 )
 
 func main() {
-	// llmchat
-	chatCfg := llmchat.AgentToolConfig{
+	builder := &llmchat.AgentTool{
 		Name: "iota",
 		Description: "IOTA智能助手",
 		Instruction: `你是一个企业内部智能助手，负责理解用户意图并将任务分发给合适的 Agent 工具。
@@ -94,8 +92,8 @@ func main() {
 				ModelName: "glm-5",
 			},
 		},
-		MCPAgents: []llmchat.MCPAgent{
-			{
+		Tools: []llmchat.AgentBuilder{
+			&llmchat.MCPAgent{
 				Name: "iotlink"
 				Endpoint: "http://localhost:8080/mcp/iotlink",
 				Description: "联接平台相关工具",
@@ -109,7 +107,9 @@ func main() {
 			},
 		},
 	}
-	chat, err := ar.NewAgentToolChat("IOTA-Agent", db, redis, cfg)
+
+	// llmchat
+	chat, err := ar.NewLLMChat("IOTA-Agent", db, redis, builder)
 	if err != nil {
 		panic(err)
 	}

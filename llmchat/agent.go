@@ -5,35 +5,76 @@ import (
 	"github.com/noble-gase/ne/helper"
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
+	"google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
+	"google.golang.org/adk/tool/agenttool"
 	"google.golang.org/adk/tool/mcptoolset"
 )
+
+type AgentCallback struct {
+	Before []agent.BeforeAgentCallback
+	After  []agent.AfterAgentCallback
+}
 
 type ToolCallback struct {
 	Before []llmagent.BeforeToolCallback
 	After  []llmagent.AfterToolCallback
+	Error  []llmagent.OnToolErrorCallback
 }
 
 type ModelCallback struct {
 	Before []llmagent.BeforeModelCallback
 	After  []llmagent.AfterModelCallback
+	Error  []llmagent.OnModelErrorCallback
 }
 
-type NormalConfig struct {
+// AgentBuilder is an interface that builds an agent.
+type AgentBuilder interface {
+	Build(model.LLM) (agent.Agent, error)
+}
+
+// NormalAgent builds an agent with MCP toolsets and function tools.
+type NormalAgent struct {
 	Name        string
 	Description string
 	Instruction string
-	LLMAdapter  LLMAdapter
-	MCPServers  []string // Streamable HTTP
-	FuncTools   []ToolBuilder
-	ToolHooks   ToolCallback
-	ModelHooks  ModelCallback
+
+	// LLMAdapter specifies the model for agent, if not set, the root agent model will be used.
+	LLMAdapter LLMAdapter
+
+	// Endpoints is the list endpoints of MCP servers based on Streamable HTTP.
+	Endpoints []string
+
+	Tools []ToolBuilder
+
+	AgentHooks AgentCallback
+	ToolHooks  ToolCallback
+	ModelHooks ModelCallback
+
+	// OutputKey only used for workflow coordination.
+	OutputKey string
 }
 
-func NewNormalAgent(cfg *NormalConfig) (agent.Agent, error) {
+func (n *NormalAgent) Build(rootModel model.LLM) (agent.Agent, error) {
+	cfg := llmagent.Config{
+		Name:                  n.Name,
+		Description:           n.Description,
+		Instruction:           n.Instruction,
+		Tools:                 make([]tool.Tool, 0, len(n.Tools)),
+		Toolsets:              make([]tool.Toolset, 0, len(n.Endpoints)),
+		BeforeAgentCallbacks:  n.AgentHooks.Before,
+		AfterAgentCallbacks:   n.AgentHooks.After,
+		BeforeToolCallbacks:   n.ToolHooks.Before,
+		AfterToolCallbacks:    n.ToolHooks.After,
+		OnToolErrorCallbacks:  n.ToolHooks.Error,
+		BeforeModelCallbacks:  n.ModelHooks.Before,
+		AfterModelCallbacks:   n.ModelHooks.After,
+		OnModelErrorCallbacks: n.ModelHooks.Error,
+		OutputKey:             n.OutputKey,
+	}
+
 	// MCP Toolset (Streamable HTTP)
-	toolsets := make([]tool.Toolset, 0, len(cfg.MCPServers))
-	for _, endpoint := range cfg.MCPServers {
+	for _, endpoint := range n.Endpoints {
 		transport := &mcp.StreamableClientTransport{
 			Endpoint:   endpoint,
 			HTTPClient: helper.NewHttpClient(),
@@ -44,95 +85,214 @@ func NewNormalAgent(cfg *NormalConfig) (agent.Agent, error) {
 		if err != nil {
 			return nil, err
 		}
-		toolsets = append(toolsets, toolset)
+		cfg.Toolsets = append(cfg.Toolsets, toolset)
 	}
 
-	// Func Tools
-	tools := make([]tool.Tool, 0, len(cfg.FuncTools))
-	for _, builder := range cfg.FuncTools {
+	// Tools
+	for _, builder := range n.Tools {
 		tool, err := builder.Build()
 		if err != nil {
 			return nil, err
 		}
-		tools = append(tools, tool)
+		cfg.Tools = append(cfg.Tools, tool)
 	}
 
 	// LLM Model
-	llmModel, err := cfg.LLMAdapter.Model()
-	if err != nil {
-		return nil, err
+	if n.LLMAdapter != nil {
+		llmModel, err := n.LLMAdapter.Model()
+		if err != nil {
+			return nil, err
+		}
+		cfg.Model = llmModel
+	} else {
+		cfg.Model = rootModel
 	}
 
-	// LLM Agent
-	llmAgent, err := llmagent.New(llmagent.Config{
-		Name:                 cfg.Name,
-		Model:                llmModel,
-		Description:          cfg.Description,
-		Instruction:          cfg.Instruction,
-		Tools:                tools,
-		Toolsets:             toolsets,
-		BeforeToolCallbacks:  cfg.ToolHooks.Before,
-		AfterToolCallbacks:   cfg.ToolHooks.After,
-		BeforeModelCallbacks: cfg.ModelHooks.Before,
-		AfterModelCallbacks:  cfg.ModelHooks.After,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return llmAgent, nil
+	return llmagent.New(cfg)
 }
 
-type AgentToolConfig struct {
+// FuncAgent builds an agent with function tools.
+type FuncAgent struct {
 	Name        string
 	Description string
 	Instruction string
-	LLMAdapter  LLMAdapter
-	MCPAgents   []*MCPAgent
-	FuncAgents  []*FuncAgent
-	ToolHooks   ToolCallback
-	ModelHooks  ModelCallback
+
+	// LLMAdapter specifies the model for agent, if not set, the root agent model will be used.
+	LLMAdapter LLMAdapter
+
+	Tools []ToolBuilder
+
+	AgentHooks AgentCallback
+	ToolHooks  ToolCallback
+	ModelHooks ModelCallback
+
+	// OutputKey only used for workflow coordination.
+	OutputKey string
 }
 
-func NewMultiToolAgent(cfg *AgentToolConfig) (agent.Agent, error) {
+func (f *FuncAgent) Build(rootModel model.LLM) (agent.Agent, error) {
+	tools := make([]tool.Tool, 0, len(f.Tools))
+	for _, v := range f.Tools {
+		t, err := v.Build()
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, t)
+	}
+
+	cfg := llmagent.Config{
+		Name:                  f.Name,
+		Description:           f.Description,
+		Instruction:           f.Instruction,
+		Tools:                 tools,
+		BeforeAgentCallbacks:  f.AgentHooks.Before,
+		AfterAgentCallbacks:   f.AgentHooks.After,
+		BeforeToolCallbacks:   f.ToolHooks.Before,
+		AfterToolCallbacks:    f.ToolHooks.After,
+		OnToolErrorCallbacks:  f.ToolHooks.Error,
+		BeforeModelCallbacks:  f.ModelHooks.Before,
+		AfterModelCallbacks:   f.ModelHooks.After,
+		OnModelErrorCallbacks: f.ModelHooks.Error,
+		OutputKey:             f.OutputKey,
+	}
+
 	// LLM Model
-	llmModel, err := cfg.LLMAdapter.Model()
-	if err != nil {
-		return nil, err
-	}
-
-	// MCP Tools
-	tools := make([]tool.Tool, 0, len(cfg.MCPAgents))
-	for _, v := range cfg.MCPAgents {
-		tool, _err := NewMCPTool(llmModel, v)
+	if f.LLMAdapter != nil {
+		llmModel, _err := f.LLMAdapter.Model()
 		if _err != nil {
 			return nil, _err
 		}
-		tools = append(tools, tool)
+		cfg.Model = llmModel
+	} else {
+		cfg.Model = rootModel
 	}
 
-	// Func Tools
-	for _, v := range cfg.FuncAgents {
-		tool, _err := NewFuncTool(llmModel, v)
+	return llmagent.New(cfg)
+}
+
+// MCPAgent builds an agent with MCP toolsets.
+type MCPAgent struct {
+	Name string
+
+	Description string
+	Instruction string
+
+	// LLMAdapter specifies the model for agent, if not set, the root agent model will be used.
+	LLMAdapter LLMAdapter
+
+	// Endpoints is the list endpoints of MCP servers based on Streamable HTTP.
+	Endpoints []string
+
+	AgentHooks AgentCallback
+	ToolHooks  ToolCallback
+	ModelHooks ModelCallback
+
+	// OutputKey only used for workflow coordination.
+	OutputKey string
+}
+
+func (m *MCPAgent) Build(rootModel model.LLM) (agent.Agent, error) {
+	cfg := llmagent.Config{
+		Name:                  m.Name,
+		Description:           m.Description,
+		Instruction:           m.Instruction,
+		Toolsets:              make([]tool.Toolset, 0, len(m.Endpoints)),
+		BeforeAgentCallbacks:  m.AgentHooks.Before,
+		AfterAgentCallbacks:   m.AgentHooks.After,
+		BeforeToolCallbacks:   m.ToolHooks.Before,
+		AfterToolCallbacks:    m.ToolHooks.After,
+		OnToolErrorCallbacks:  m.ToolHooks.Error,
+		BeforeModelCallbacks:  m.ModelHooks.Before,
+		AfterModelCallbacks:   m.ModelHooks.After,
+		OnModelErrorCallbacks: m.ModelHooks.Error,
+		OutputKey:             m.OutputKey,
+	}
+
+	// MCP Toolset (Streamable HTTP)
+	for _, endpoint := range m.Endpoints {
+		transport := &mcp.StreamableClientTransport{
+			Endpoint:   endpoint,
+			HTTPClient: helper.NewHttpClient(),
+		}
+		toolset, err := mcptoolset.New(mcptoolset.Config{
+			Transport: transport,
+		})
+		if err != nil {
+			return nil, err
+		}
+		cfg.Toolsets = append(cfg.Toolsets, toolset)
+	}
+
+	// LLM Model
+	if m.LLMAdapter != nil {
+		llmModel, _err := m.LLMAdapter.Model()
 		if _err != nil {
 			return nil, _err
 		}
-		tools = append(tools, tool)
+		cfg.Model = llmModel
+	} else {
+		cfg.Model = rootModel
 	}
 
-	// LLM Agent
-	llmAgent, err := llmagent.New(llmagent.Config{
-		Name:                 cfg.Name,
-		Model:                llmModel,
-		Description:          cfg.Description,
-		Instruction:          cfg.Instruction,
-		Tools:                tools,
-		BeforeToolCallbacks:  cfg.ToolHooks.Before,
-		AfterToolCallbacks:   cfg.ToolHooks.After,
-		BeforeModelCallbacks: cfg.ModelHooks.Before,
-		AfterModelCallbacks:  cfg.ModelHooks.After,
-	})
-	if err != nil {
-		return nil, err
+	return llmagent.New(cfg)
+}
+
+// AgentTool builds an agent with other agents as tools.
+type AgentTool struct {
+	Name string
+
+	Description string
+	Instruction string
+
+	// LLMAdapter specifies the model for agent, if not set, the root agent model will be used.
+	LLMAdapter LLMAdapter
+
+	Tools []AgentBuilder
+
+	AgentHooks AgentCallback
+	ToolHooks  ToolCallback
+	ModelHooks ModelCallback
+
+	// OutputKey only used for workflow coordination.
+	OutputKey string
+}
+
+func (a *AgentTool) Build(rootModel model.LLM) (agent.Agent, error) {
+	cfg := llmagent.Config{
+		Name:                  a.Name,
+		Description:           a.Description,
+		Instruction:           a.Instruction,
+		Tools:                 make([]tool.Tool, 0, len(a.Tools)),
+		BeforeAgentCallbacks:  a.AgentHooks.Before,
+		AfterAgentCallbacks:   a.AgentHooks.After,
+		BeforeToolCallbacks:   a.ToolHooks.Before,
+		AfterToolCallbacks:    a.ToolHooks.After,
+		OnToolErrorCallbacks:  a.ToolHooks.Error,
+		BeforeModelCallbacks:  a.ModelHooks.Before,
+		AfterModelCallbacks:   a.ModelHooks.After,
+		OnModelErrorCallbacks: a.ModelHooks.Error,
+		OutputKey:             a.OutputKey,
 	}
-	return llmAgent, nil
+
+	// LLM Model
+	if a.LLMAdapter != nil {
+		llmModel, err := a.LLMAdapter.Model()
+		if err != nil {
+			return nil, err
+		}
+		cfg.Model = llmModel
+	} else {
+		cfg.Model = rootModel
+	}
+
+	// Tools
+	for _, v := range a.Tools {
+		_agent, _err := v.Build(cfg.Model)
+		if _err != nil {
+			return nil, _err
+		}
+		cfg.Tools = append(cfg.Tools, agenttool.New(_agent, nil))
+	}
+
+	return llmagent.New(cfg)
 }
