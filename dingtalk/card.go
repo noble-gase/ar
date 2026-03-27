@@ -9,7 +9,7 @@ import (
 	"time"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
-	dingtalkcard "github.com/alibabacloud-go/dingtalk/card_1_0"
+	dingcard "github.com/alibabacloud-go/dingtalk/card_1_0"
 	util "github.com/alibabacloud-go/tea-utils/v2/service"
 	"github.com/alibabacloud-go/tea/tea"
 	"github.com/google/uuid"
@@ -32,7 +32,7 @@ type CardSender struct {
 	lockKey  string
 	tokenKey string
 
-	card  *dingtalkcard.Client
+	card  *dingcard.Client
 	reduc redis.UniversalClient
 }
 
@@ -49,15 +49,15 @@ func (s *CardSender) CreateAndDeliverRobot(ctx context.Context, userId, initCont
 		"content": tea.String(initContent),
 	}
 
-	req := &dingtalkcard.CreateAndDeliverRequest{
+	req := &dingcard.CreateAndDeliverRequest{
 		CallbackType:   tea.String("STREAM"),
-		CardData:       &dingtalkcard.CreateAndDeliverRequestCardData{CardParamMap: cardParamMap},
+		CardData:       &dingcard.CreateAndDeliverRequestCardData{CardParamMap: cardParamMap},
 		CardTemplateId: tea.String(s.templateId),
-		ImRobotOpenDeliverModel: &dingtalkcard.CreateAndDeliverRequestImRobotOpenDeliverModel{
+		ImRobotOpenDeliverModel: &dingcard.CreateAndDeliverRequestImRobotOpenDeliverModel{
 			SpaceType: tea.String("IM_ROBOT"),
 			RobotCode: tea.String(s.clientId),
 		},
-		ImRobotOpenSpaceModel: &dingtalkcard.CreateAndDeliverRequestImRobotOpenSpaceModel{
+		ImRobotOpenSpaceModel: &dingcard.CreateAndDeliverRequestImRobotOpenSpaceModel{
 			SupportForward: tea.Bool(true),
 		},
 		OpenSpaceId: tea.String(fmt.Sprintf("dtv1.card//im_robot.%s", userId)),
@@ -66,7 +66,7 @@ func (s *CardSender) CreateAndDeliverRobot(ctx context.Context, userId, initCont
 		UserIdType:  tea.Int32(1),
 	}
 
-	headers := &dingtalkcard.CreateAndDeliverHeaders{
+	headers := &dingcard.CreateAndDeliverHeaders{
 		XAcsDingtalkAccessToken: tea.String(accessToken),
 	}
 
@@ -90,18 +90,18 @@ func (s *CardSender) CreateAndDeliverGroup(ctx context.Context, userId, conversa
 		"content": tea.String(initContent),
 	}
 
-	req := &dingtalkcard.CreateAndDeliverRequest{
+	req := &dingcard.CreateAndDeliverRequest{
 		CallbackType: tea.String("STREAM"),
-		CardData: &dingtalkcard.CreateAndDeliverRequestCardData{
+		CardData: &dingcard.CreateAndDeliverRequestCardData{
 			CardParamMap: cardParamMap,
 		},
 		CardTemplateId: tea.String(s.templateId),
-		ImGroupOpenDeliverModel: &dingtalkcard.CreateAndDeliverRequestImGroupOpenDeliverModel{
+		ImGroupOpenDeliverModel: &dingcard.CreateAndDeliverRequestImGroupOpenDeliverModel{
 			RobotCode: tea.String(s.clientId),
 			// 卡片接收人
 			Recipients: []*string{tea.String(userId)},
 		},
-		ImGroupOpenSpaceModel: &dingtalkcard.CreateAndDeliverRequestImGroupOpenSpaceModel{
+		ImGroupOpenSpaceModel: &dingcard.CreateAndDeliverRequestImGroupOpenSpaceModel{
 			SupportForward: tea.Bool(true),
 		},
 		OpenSpaceId: tea.String(fmt.Sprintf("dtv1.card//im_group.%s", conversationId)),
@@ -110,7 +110,7 @@ func (s *CardSender) CreateAndDeliverGroup(ctx context.Context, userId, conversa
 		UserIdType:  tea.Int32(1),
 	}
 
-	headers := &dingtalkcard.CreateAndDeliverHeaders{
+	headers := &dingcard.CreateAndDeliverHeaders{
 		XAcsDingtalkAccessToken: tea.String(accessToken),
 	}
 
@@ -128,7 +128,7 @@ func (s *CardSender) StreamingUpdate(ctx context.Context, outTrackId, content st
 		slog.ErrorContext(ctx, "[dingtalk card] load access_token failed", slog.String("outTrackId", outTrackId), slog.String("error", err.Error()))
 		return
 	}
-	request := &dingtalkcard.StreamingUpdateRequest{
+	request := &dingcard.StreamingUpdateRequest{
 		Content:    tea.String(content),
 		Guid:       tea.String(uuid.New().String()),
 		IsError:    tea.Bool(false),
@@ -138,7 +138,7 @@ func (s *CardSender) StreamingUpdate(ctx context.Context, outTrackId, content st
 		OutTrackId: tea.String(outTrackId),
 	}
 
-	headers := &dingtalkcard.StreamingUpdateHeaders{
+	headers := &dingcard.StreamingUpdateHeaders{
 		XAcsDingtalkAccessToken: tea.String(accessToken),
 	}
 
@@ -206,7 +206,7 @@ func (s *CardSender) refreshAccessToken(ctx context.Context) {
 }
 
 func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
-	client, err := dingtalkcard.NewClient(&openapi.Config{
+	client, err := dingcard.NewClient(&openapi.Config{
 		Protocol: tea.String("https"),
 		RegionId: tea.String("central"),
 	})
