@@ -16,6 +16,7 @@ import (
 	"google.golang.org/adk/session"
 )
 
+// EventHandler is a function that handles LLM response events.
 type EventHandler func(ctx context.Context, seq iter.Seq2[*session.Event, error], sender *CardSender, outTrackId string)
 
 type Bot struct {
@@ -136,7 +137,10 @@ type Config struct {
 	ClientId       string
 	ClientSecret   string
 	CardTemplateId string
-	EventHandler   EventHandler
+
+	// EventHandler specifies a custom function that handles LLM response events.
+	// If not set, the default event handler will be used.
+	EventHandler EventHandler
 }
 
 func NewBot(cfg *Config, chat *llmchat.Chat, card *CardSender) *Bot {
