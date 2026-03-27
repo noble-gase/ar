@@ -57,7 +57,7 @@ func main() {
 	cfg := &dingtalk.Config{
 		ClientId: "clientId",
 		ClientSecret: "clientSecret",
-		CardTemplateId: "cardTemplateId",
+		CardTemplateId: "xxxxxx.schema",
 	}
 	assistant, err := ar.NewAssistant(cfg, redis, chat)
 	if err != nil {
@@ -127,7 +127,7 @@ func main() {
 	cfg := &dingtalk.Config{
 		ClientId: "clientId",
 		ClientSecret: "clientSecret",
-		CardTemplateId: "cardTemplateId",
+		CardTemplateId: "xxxxxx.schema",
 	}
 	assistant, err := ar.NewAssistant(cfg, redis, chat)
 	if err != nil {
