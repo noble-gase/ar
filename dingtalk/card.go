@@ -24,8 +24,6 @@ type AccessToken struct {
 	ExpiredAt int64  `json:"expired_at"`
 }
 
-// -------- 卡片 Client --------
-
 type CardSender struct {
 	clientId     string
 	clientSecret string
