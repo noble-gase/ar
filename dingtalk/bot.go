@@ -109,12 +109,12 @@ func (b *Bot) defaultEventHandler(ctx context.Context, seq iter.Seq2[*session.Ev
 	}
 }
 
-func (b *Bot) reply(ctx context.Context, webhook, answer string) error {
+func (b *Bot) reply(ctx context.Context, webhook, text string) error {
 	body := helper.X{
 		"msgtype": "markdown",
 		"markdown": helper.X{
 			"title": b.chat.Name(),
-			"text":  answer,
+			"text":  text,
 		},
 	}
 	resp, err := helper.RestyClient.R().
