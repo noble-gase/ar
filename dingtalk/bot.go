@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"strings"
 	"time"
@@ -12,12 +13,16 @@ import (
 	"github.com/noble-gase/ne/helper"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/chatbot"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
+	"google.golang.org/adk/session"
 )
 
+type EventHandler func(ctx context.Context, seq iter.Seq2[*session.Event, error], sender *CardSender, outTrackId string)
+
 type Bot struct {
-	chat   *llmchat.Chat
-	card   *CardSender
-	client *client.StreamClient
+	chat    *llmchat.Chat
+	card    *CardSender
+	client  *client.StreamClient
+	handler EventHandler
 }
 
 func (b *Bot) Start() {
@@ -58,22 +63,28 @@ func (b *Bot) messageHandler(ctx context.Context, data *chatbot.BotCallbackDataM
 	return nil, nil
 }
 
-func (b *Bot) streamAnswer(ctx context.Context, outTrackId, userId, question string) {
-	// 调用 adk-go Agent
-	events, err := b.chat.Ask(ctx, userId, question)
+func (b *Bot) streamAnswer(ctx context.Context, userId, text, outTrackId string) {
+	seq, err := b.chat.Ask(ctx, userId, text)
 	if err != nil {
-		b.card.StreamingUpdate(ctx, outTrackId, "获取会话失败："+err.Error(), true)
+		b.card.StreamingUpdate(ctx, outTrackId, "> ⚠️ 出现错误："+err.Error(), true)
 		return
 	}
+	if b.handler != nil {
+		b.handler(ctx, seq, b.card, outTrackId)
+		return
+	}
+	b.defaultEventHandler(ctx, seq, outTrackId)
+}
 
+func (b *Bot) defaultEventHandler(ctx context.Context, seq iter.Seq2[*session.Event, error], outTrackId string) {
 	var accumulated strings.Builder
-	for event, err := range events {
+	for event, err := range seq {
 		if err != nil {
 			b.card.StreamingUpdate(ctx, outTrackId, accumulated.String()+"\n\n> ⚠️ 出现错误："+err.Error(), true)
 			return
 		}
 
-		// 最终 event：直接用它的完整内容，不再累积
+		// 最终event：直接用它的完整内容，不再累积
 		if event.IsFinalResponse() {
 			if event.Content != nil {
 				var final strings.Builder
@@ -121,8 +132,15 @@ func (b *Bot) reply(ctx context.Context, webhook, answer string) error {
 	return nil
 }
 
-func NewBot(clientId, clientSecret string, chat *llmchat.Chat, card *CardSender) *Bot {
-	cred := client.NewAppCredentialConfig(clientId, clientSecret)
+type Config struct {
+	ClientId       string
+	ClientSecret   string
+	CardTemplateId string
+	EventHandler   EventHandler
+}
+
+func NewBot(cfg *Config, chat *llmchat.Chat, card *CardSender) *Bot {
+	cred := client.NewAppCredentialConfig(cfg.ClientId, cfg.ClientSecret)
 
 	client := client.NewStreamClient(
 		client.WithAppCredential(cred),
@@ -131,8 +149,9 @@ func NewBot(clientId, clientSecret string, chat *llmchat.Chat, card *CardSender)
 	)
 
 	return &Bot{
-		chat:   chat,
-		card:   card,
-		client: client,
+		chat:    chat,
+		card:    card,
+		client:  client,
+		handler: cfg.EventHandler,
 	}
 }

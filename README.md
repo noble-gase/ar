@@ -20,12 +20,14 @@ package main
 
 import (
 	"github.com/noble-gase/ar"
+	"github.com/noble-gase/ar/dingtalk"
 	"github.com/noble-gase/ar/llmchat"
 	"github.com/noble-gase/ar/model/openai"
 )
 
 func main() {
-	builder := &llmchat.NormalAgent{
+	// agent
+	agent := &llmchat.NormalAgent{
 		Name: "iota",
 		Description: "IOTA智能助手",
 		Instruction: `你是一个企业内部智能助手。
@@ -46,13 +48,18 @@ func main() {
 	}
 
 	// llmchat
-	chat, err := ar.NewLLMChat("IOTA-Agent", db, redis, builder)
+	chat, err := ar.NewLLMChat("IOTA-Agent", db, redis, agent)
 	if err != nil {
 		panic(err)
 	}
 
 	// dingtalk
-	assistant, err := ar.NewAssistant("clientId", "clientSecret", "cardTemplateId", redis, chat)
+	cfg := &dingtalk.Config{
+		ClientId: "clientId",
+		ClientSecret: "clientSecret",
+		CardTemplateId: "cardTemplateId",
+	}
+	assistant, err := ar.NewAssistant(cfg, redis, chat)
 	if err != nil {
 		panic(err)
 	}
@@ -74,12 +81,14 @@ package main
 
 import (
 	"github.com/noble-gase/ar"
+	"github.com/noble-gase/ar/dingtalk"
 	"github.com/noble-gase/ar/llmchat"
 	"github.com/noble-gase/ar/model/openai"
 )
 
 func main() {
-	builder := &llmchat.AgentTool{
+	// agent
+	agent := &llmchat.AgentTool{
 		Name: "iota",
 		Description: "IOTA智能助手",
 		Instruction: `你是一个企业内部智能助手，负责理解用户意图并将任务分发给合适的 Agent 工具。
@@ -109,13 +118,18 @@ func main() {
 	}
 
 	// llmchat
-	chat, err := ar.NewLLMChat("IOTA-Agent", db, redis, builder)
+	chat, err := ar.NewLLMChat("IOTA-Agent", db, redis, agent)
 	if err != nil {
 		panic(err)
 	}
 
 	// dingtalk
-	assistant, err := ar.NewAssistant("clientId", "clientSecret", "cardTemplateId", redis, chat)
+	cfg := &dingtalk.Config{
+		ClientId: "clientId",
+		ClientSecret: "clientSecret",
+		CardTemplateId: "cardTemplateId",
+	}
+	assistant, err := ar.NewAssistant(cfg, redis, chat)
 	if err != nil {
 		panic(err)
 	}

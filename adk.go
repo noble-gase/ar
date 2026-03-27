@@ -49,12 +49,12 @@ func (a *Assistant) Stop() {
 }
 
 // NewAssistant returns a DingTalk assistant.
-func NewAssistant(clientId, clientSecret, cardTemplateId string, uc redis.UniversalClient, chat *llmchat.Chat) (*Assistant, error) {
-	card, err := dingtalk.NewCardSender(clientId, clientSecret, cardTemplateId, uc)
+func NewAssistant(cfg *dingtalk.Config, uc redis.UniversalClient, chat *llmchat.Chat) (*Assistant, error) {
+	card, err := dingtalk.NewCardSender(cfg, uc)
 	if err != nil {
 		return nil, err
 	}
 
-	bot := dingtalk.NewBot(clientId, clientSecret, chat, card)
+	bot := dingtalk.NewBot(cfg, chat, card)
 	return &Assistant{bot: bot}, nil
 }

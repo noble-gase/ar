@@ -207,7 +207,7 @@ func (s *CardSender) refreshAccessToken(ctx context.Context) {
 	}
 }
 
-func NewCardSender(clientId, clientSecret, cardTemplateId string, uc redis.UniversalClient) (*CardSender, error) {
+func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 	client, err := dingtalkcard.NewClient(&openapi.Config{
 		Protocol: tea.String("https"),
 		RegionId: tea.String("central"),
@@ -217,12 +217,12 @@ func NewCardSender(clientId, clientSecret, cardTemplateId string, uc redis.Unive
 	}
 
 	s := &CardSender{
-		clientId:     clientId,
-		clientSecret: clientSecret,
-		templateId:   cardTemplateId,
+		clientId:     cfg.ClientId,
+		clientSecret: cfg.ClientSecret,
+		templateId:   cfg.CardTemplateId,
 
-		lockKey:  fmt.Sprintf("mutex:dingtalk:refresh_token:%s", clientId),
-		tokenKey: fmt.Sprintf("agent:dingtalk:access_token:%s", clientId),
+		lockKey:  fmt.Sprintf("mutex:dingtalk:refresh_token:%s", cfg.ClientId),
+		tokenKey: fmt.Sprintf("agent:dingtalk:access_token:%s", cfg.ClientId),
 
 		card:  client,
 		reduc: uc,

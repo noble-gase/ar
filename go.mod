@@ -12,7 +12,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/noble-gase/ne v0.10.2
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
-	github.com/openai/openai-go/v3 v3.29.0
+	github.com/openai/openai-go/v3 v3.30.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/tidwall/gjson v1.18.0
 	google.golang.org/adk v1.0.0
@@ -52,7 +52,7 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/safehtml v0.1.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.14 // indirect
-	github.com/googleapis/gax-go/v2 v2.19.0 // indirect
+	github.com/googleapis/gax-go/v2 v2.20.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/go-version v1.8.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
@@ -85,7 +85,7 @@ require (
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
-	google.golang.org/api v0.272.0 // indirect
+	google.golang.org/api v0.273.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
