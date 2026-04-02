@@ -1,6 +1,6 @@
 # 氩-Ar
 
-[氩-Ar] AI智能助手开发库｜Assistant Development Kit (ADK) for Go
+[氩-Ar] AI 智能助手开发库｜Assistant Development Kit (ADK) for Go
 
 ## Install
 
