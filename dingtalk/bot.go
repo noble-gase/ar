@@ -78,36 +78,29 @@ func (b *Bot) streamAnswer(ctx context.Context, userId, text, outTrackId string)
 }
 
 func (b *Bot) defaultEventHandler(ctx context.Context, seq iter.Seq2[*session.Event, error], outTrackId string) {
-	var accumulated strings.Builder
+	var result strings.Builder
+
+	// event处理
 	for event, err := range seq {
 		if err != nil {
-			b.card.StreamingUpdate(ctx, outTrackId, accumulated.String()+"\n\n> ⚠️ 出现错误："+err.Error(), true)
+			b.card.StreamingUpdate(ctx, outTrackId, result.String()+"\n\n> ⚠️ 出现错误："+err.Error(), true)
 			return
 		}
 
-		// 最终event：直接用它的完整内容，不再累积
-		if event.IsFinalResponse() {
-			if event.Content != nil {
-				var final strings.Builder
-				for _, part := range event.Content.Parts {
-					if !part.Thought {
-						final.WriteString(part.Text)
-					}
-				}
-				b.card.StreamingUpdate(ctx, outTrackId, final.String(), true)
-			}
-			return
+		// 非最终event 或 内容为空，则跳过
+		if !event.IsFinalResponse() || event.Content == nil {
+			continue
 		}
 
-		if event.Content != nil {
-			for _, part := range event.Content.Parts {
-				if !part.Thought {
-					accumulated.WriteString(part.Text)
-				}
+		for _, part := range event.Content.Parts {
+			if !part.Thought {
+				result.WriteString(part.Text)
 			}
-			b.card.StreamingUpdate(ctx, outTrackId, accumulated.String(), false)
 		}
 	}
+
+	// 更新卡片内容
+	b.card.StreamingUpdate(ctx, outTrackId, result.String(), true)
 }
 
 func (b *Bot) reply(ctx context.Context, webhook, text string) error {
