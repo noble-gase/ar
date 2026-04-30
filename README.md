@@ -36,6 +36,7 @@ func main() {
 - 列表数据，请使用 Markdown 表格输出展示
 - 不要凭自身知识回答问题，必须通过工具获取正确的信息
 - 如果用户的问题与工具列表范围无关，请告知用户无法处理
+- 结果必须全部显示，不要省略字段，更不要使用 ... 省略内容
 - 遇到工具不能处理的问题，请如实告知，并让用户找「xxx」确认`,
 		LLMAdapter: &llmchat.OpenAI{
 			Config: openai.Config{
@@ -93,7 +94,8 @@ func main() {
 		Description: "IOTA智能助手",
 		Instruction: `你是一个企业内部智能助手，负责理解用户意图并将任务分发给合适的 Agent 工具。
 ## 基本规则
-- 不要凭自身知识回答问题，必须通过 Agent 工具获取正确的信息`,
+- 不要凭自身知识回答问题，必须通过 Agent 工具获取正确的信息
+- 结果必须全部显示，不要省略字段，更不要使用 ... 省略内容`,
 		LLMAdapter: &llmchat.OpenAI{
 			Config: openai.Config{
 				APIKey: "sk-xxxxxx",
