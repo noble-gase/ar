@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/noble-gase/argon/model/common"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
@@ -39,6 +40,7 @@ type openaiModel struct {
 
 // HTTPOptions holds optional HTTP-level configuration for the OpenAI client.
 type HTTPOptions struct {
+	Client  *http.Client
 	Headers http.Header
 }
 
@@ -64,6 +66,9 @@ func NewModel(cfg Config) model.LLM {
 	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+	}
+	if cfg.HTTPOptions.Client != nil {
+		opts = append(opts, option.WithHTTPClient(cfg.HTTPOptions.Client))
 	}
 	for k, vals := range cfg.HTTPOptions.Headers {
 		for _, v := range vals {
@@ -384,14 +389,14 @@ func (m *openaiModel) convertContentToMessages(content *genai.Content) ([]openai
 	for _, part := range content.Parts {
 		switch {
 		case part.FunctionResponse != nil:
-			responseJSON, err := json.Marshal(part.FunctionResponse.Response)
+			responseJSON, err := common.MarshalPayload(part.FunctionResponse.Response)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal function response: %w", err)
 			}
 			normalizedId := m.normalizeToolCallId(part.FunctionResponse.ID)
 			messages = append(messages, openai.ToolMessage(string(responseJSON), normalizedId))
 		case part.FunctionCall != nil:
-			argsJSON, err := json.Marshal(part.FunctionCall.Args)
+			argsJSON, err := common.MarshalPayload(part.FunctionCall.Args)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal function args: %w", err)
 			}

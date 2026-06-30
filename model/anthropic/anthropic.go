@@ -15,6 +15,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/noble-gase/argon/model/common"
 	"google.golang.org/adk/model"
 	"google.golang.org/genai"
 )
@@ -34,6 +35,7 @@ type anthropicModel struct {
 
 // HTTPOptions holds optional HTTP-level configuration for the Anthropic client.
 type HTTPOptions struct {
+	Client  *http.Client
 	Headers http.Header
 }
 
@@ -69,6 +71,9 @@ func NewModel(cfg Config) model.LLM {
 	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
+	}
+	if cfg.HTTPOptions.Client != nil {
+		opts = append(opts, option.WithHTTPClient(cfg.HTTPOptions.Client))
 	}
 	for k, vals := range cfg.HTTPOptions.Headers {
 		for _, v := range vals {
@@ -231,6 +236,7 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 	// Repair message history to comply with Anthropic's requirements
 	// (each tool_use must have a corresponding tool_result immediately after)
 	messages = repairMessageHistory(messages)
+	messages = trimFinalAssistantWhitespace(messages)
 
 	params.Messages = messages
 
@@ -315,17 +321,21 @@ func (m *anthropicModel) convertContentToMessage(content *genai.Content) (*anthr
 		}
 
 		if part.FunctionCall != nil {
+			input, err := common.MarshalPayload(part.FunctionCall.Args)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal function call args: %w", err)
+			}
 			blocks = append(blocks, anthropic.ContentBlockParamUnion{
 				OfToolUse: &anthropic.ToolUseBlockParam{
 					ID:    sanitizeToolId(part.FunctionCall.ID),
 					Name:  part.FunctionCall.Name,
-					Input: convertToolInputToRaw(part.FunctionCall.Args),
+					Input: input,
 				},
 			})
 		}
 
 		if part.FunctionResponse != nil {
-			responseJSON, err := json.Marshal(part.FunctionResponse.Response)
+			responseJSON, err := common.MarshalPayload(part.FunctionResponse.Response)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal function response: %w", err)
 			}
@@ -476,29 +486,6 @@ func convertStopReason(reason anthropic.StopReason) genai.FinishReason {
 	}
 }
 
-// emptyJSONObject is the JSON representation of an empty object.
-var emptyJSONObject = json.RawMessage(`{}`)
-
-// convertToolInputToRaw converts tool input to json.RawMessage for sending to Anthropic API.
-// Handles nil values and nil maps inside interfaces by returning "{}".
-func convertToolInputToRaw(input any) json.RawMessage {
-	if input == nil {
-		return emptyJSONObject
-	}
-
-	// If already json.RawMessage, use directly
-	if raw, ok := input.(json.RawMessage); ok && len(raw) > 0 {
-		return raw
-	}
-
-	// Marshal to JSON (handles nil maps inside interface correctly)
-	data, err := json.Marshal(input)
-	if err != nil || len(data) == 0 || string(data) == "null" {
-		return emptyJSONObject
-	}
-	return data
-}
-
 // convertToolInput converts tool input to map[string]any for storing in genai.FunctionCall.Args.
 // Used when receiving tool_use blocks from Anthropic responses.
 func convertToolInput(input any) map[string]any {
@@ -599,6 +586,35 @@ func repairMessageHistory(messages []anthropic.MessageParam) []anthropic.Message
 	}
 
 	return result
+}
+
+// trimFinalAssistantWhitespace right-trims the last text block of a trailing
+// assistant message. Anthropic rejects a request whose final assistant content
+// ends in whitespace ("final assistant content cannot end with trailing
+// whitespace"): the prefill continues from those exact tokens and a trailing
+// space is ambiguous to tokenise. A block left empty after trimming is dropped,
+// since empty text blocks are also rejected.
+func trimFinalAssistantWhitespace(messages []anthropic.MessageParam) []anthropic.MessageParam {
+	if len(messages) == 0 {
+		return messages
+	}
+	last := &messages[len(messages)-1]
+	if last.Role != anthropic.MessageParamRoleAssistant {
+		return messages
+	}
+
+	for i := len(last.Content) - 1; i >= 0; i-- {
+		text := last.Content[i].OfText
+		if text == nil {
+			continue
+		}
+		text.Text = strings.TrimRight(text.Text, " \t\n\r")
+		if text.Text == "" {
+			last.Content = append(last.Content[:i], last.Content[i+1:]...)
+		}
+		break
+	}
+	return messages
 }
 
 // extractToolUseIds returns all tool_use IDs from an assistant message.
