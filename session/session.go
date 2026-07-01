@@ -9,8 +9,8 @@ import (
 	"github.com/noble-gase/neon/helper"
 	"github.com/noble-gase/neon/redkit"
 	"github.com/redis/go-redis/v9"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/session/database"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/session/database"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

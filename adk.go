@@ -5,7 +5,7 @@ import (
 	"github.com/noble-gase/argon/llmchat"
 	"github.com/noble-gase/argon/session"
 	"github.com/redis/go-redis/v9"
-	"google.golang.org/adk/agent"
+	"google.golang.org/adk/v2/agent"
 	"gorm.io/gorm"
 )
 

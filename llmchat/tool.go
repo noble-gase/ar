@@ -1,8 +1,8 @@
 package llmchat
 
 import (
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 )
 
 // ToolBuilder is an interface that builds a tool.

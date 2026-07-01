@@ -14,7 +14,7 @@ import (
 	"github.com/noble-gase/neon/httpkit"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/chatbot"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // EventHandler is a function that handles LLM response events.

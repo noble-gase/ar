@@ -7,7 +7,7 @@ require (
 	github.com/alibabacloud-go/dingtalk v1.7.38
 	github.com/alibabacloud-go/tea v1.5.2
 	github.com/alibabacloud-go/tea-utils/v2 v2.0.9
-	github.com/anthropics/anthropic-sdk-go v1.53.0
+	github.com/anthropics/anthropic-sdk-go v1.55.0
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/noble-gase/neon v0.2.2
@@ -15,7 +15,7 @@ require (
 	github.com/openai/openai-go/v3 v3.41.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/tidwall/gjson v1.19.0
-	google.golang.org/adk v1.4.0
+	google.golang.org/adk/v2 v2.0.0
 	google.golang.org/genai v1.62.0
 	gorm.io/gorm v1.31.2
 )
@@ -60,7 +60,7 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -91,10 +91,10 @@ require (
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
-	google.golang.org/api v0.286.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260622175928-b703f567277d // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260622175928-b703f567277d // indirect
-	google.golang.org/grpc v1.81.1 // indirect
+	google.golang.org/api v0.287.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260630182238-925bb5da69e7 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260630182238-925bb5da69e7 // indirect
+	google.golang.org/grpc v1.82.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

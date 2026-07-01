@@ -1,11 +1,11 @@
 package llmchat
 
 import (
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/agent/workflowagents/loopagent"
-	"google.golang.org/adk/agent/workflowagents/parallelagent"
-	"google.golang.org/adk/agent/workflowagents/sequentialagent"
-	"google.golang.org/adk/model"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/workflowagents/loopagent"
+	"google.golang.org/adk/v2/agent/workflowagents/parallelagent"
+	"google.golang.org/adk/v2/agent/workflowagents/sequentialagent"
+	"google.golang.org/adk/v2/model"
 )
 
 // SequentialAgent builds an agent that runs its sub-agents in a sequence.
