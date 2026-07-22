@@ -46,10 +46,10 @@ func main() {
 			Config: openai.Config{
 				APIKey: "sk-xxxxxxxxx",
 				BaseURL: "https://api.deepseek.com",
-				ModelName: "deepseek-v4-flash",
+				ModelName: "deepseek-v4-pro",
 			},
 		},
-		Endpoints: []string{"http://localhost:8080/mcp/iotlink"},
+		Skills: []string{"./skills"},
 	}
 
 	// llmchat
@@ -108,9 +108,9 @@ func main() {
 			},
 		},
 		Tools: []llmchat.AgentBuilder{
-			&llmchat.MCPAgent{
+			&llmchat.SkillAgent{
 				Name: "iotlink"
-				Endpoint: "http://localhost:8080/mcp/iotlink",
+				Skills: []string{"./skills"},
 				Description: "联接平台相关工具",
 				Instruction: `你是一个物联网「联接平台」相关的工具集合，你可以回答 MQTT 连接相关的问题。
 ## 基本规则

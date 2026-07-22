@@ -1,6 +1,10 @@
 package llmchat
 
 import (
+	"context"
+	"fmt"
+	"os"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/noble-gase/neon/httpkit"
 	"google.golang.org/adk/v2/agent"
@@ -9,6 +13,8 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/agenttool"
 	"google.golang.org/adk/v2/tool/mcptoolset"
+	"google.golang.org/adk/v2/tool/skilltoolset"
+	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 )
 
 type AgentCallback struct {
@@ -45,6 +51,17 @@ type NormalAgent struct {
 	// Endpoints is the list endpoints of MCP servers based on Streamable HTTP.
 	Endpoints []string
 
+	// Skills is the list of skills directory paths, which expected layout example:
+	//
+	//	  skill-1/
+	//		   SKILL.md
+	//		   assets/
+	//	  skill-2/
+	//		   SKILL.md
+	//		   references/
+	//		   scripts/
+	Skills []string
+
 	Tools []ToolBuilder
 
 	AgentHooks AgentCallback
@@ -56,12 +73,14 @@ type NormalAgent struct {
 }
 
 func (n *NormalAgent) Build(rootModel model.LLM) (agent.Agent, error) {
+	ctx := context.Background()
+
 	cfg := llmagent.Config{
 		Name:                  n.Name,
 		Description:           n.Description,
 		Instruction:           n.Instruction,
 		Tools:                 make([]tool.Tool, 0, len(n.Tools)),
-		Toolsets:              make([]tool.Toolset, 0, len(n.Endpoints)),
+		Toolsets:              make([]tool.Toolset, 0, len(n.Endpoints)+len(n.Skills)),
 		BeforeAgentCallbacks:  n.AgentHooks.Before,
 		AfterAgentCallbacks:   n.AgentHooks.After,
 		BeforeToolCallbacks:   n.ToolHooks.Before,
@@ -83,7 +102,22 @@ func (n *NormalAgent) Build(rootModel model.LLM) (agent.Agent, error) {
 			Transport: transport,
 		})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("MCP Toolset: %w", err)
+		}
+		cfg.Toolsets = append(cfg.Toolsets, toolset)
+	}
+
+	// Skill Toolset
+	for _, dir := range n.Skills {
+		source := skill.NewFileSystemSource(os.DirFS(dir))
+		source, _, err := skill.WithCompletePreloadSource(ctx, source)
+		if err != nil {
+			return nil, fmt.Errorf("Skill Toolset: %w", err)
+		}
+
+		toolset, err := skilltoolset.New(ctx, skilltoolset.Config{Source: source})
+		if err != nil {
+			return nil, fmt.Errorf("Skill Toolset: %w", err)
 		}
 		cfg.Toolsets = append(cfg.Toolsets, toolset)
 	}
@@ -92,7 +126,7 @@ func (n *NormalAgent) Build(rootModel model.LLM) (agent.Agent, error) {
 	for _, builder := range n.Tools {
 		tool, err := builder.Build()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Tools: %w", err)
 		}
 		cfg.Tools = append(cfg.Tools, tool)
 	}
@@ -101,7 +135,7 @@ func (n *NormalAgent) Build(rootModel model.LLM) (agent.Agent, error) {
 	if n.LLMAdapter != nil {
 		llmModel, err := n.LLMAdapter.Model()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LLM Model: %w", err)
 		}
 		cfg.Model = llmModel
 	} else {
@@ -135,7 +169,7 @@ func (f *FuncAgent) Build(rootModel model.LLM) (agent.Agent, error) {
 	for _, v := range f.Tools {
 		t, err := v.Build()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Tools: %w", err)
 		}
 		tools = append(tools, t)
 	}
@@ -158,9 +192,86 @@ func (f *FuncAgent) Build(rootModel model.LLM) (agent.Agent, error) {
 
 	// LLM Model
 	if f.LLMAdapter != nil {
-		llmModel, _err := f.LLMAdapter.Model()
-		if _err != nil {
-			return nil, _err
+		llmModel, err := f.LLMAdapter.Model()
+		if err != nil {
+			return nil, fmt.Errorf("LLM Model: %w", err)
+		}
+		cfg.Model = llmModel
+	} else {
+		cfg.Model = rootModel
+	}
+
+	return llmagent.New(cfg)
+}
+
+// SkillAgent builds an agent with skill toolsets.
+type SkillAgent struct {
+	Name string
+
+	Description string
+	Instruction string
+
+	// LLMAdapter specifies the model for agent, if not set, the root agent model will be used.
+	LLMAdapter LLMAdapter
+
+	// Skills is the list of skills directory paths, which expected layout example:
+	//
+	//	  skill-1/
+	//		   SKILL.md
+	//		   assets/
+	//	  skill-2/
+	//		   SKILL.md
+	//		   references/
+	//		   scripts/
+	Skills []string
+
+	AgentHooks AgentCallback
+	ToolHooks  ToolCallback
+	ModelHooks ModelCallback
+
+	// OutputKey only used for workflow coordination.
+	OutputKey string
+}
+
+func (s *SkillAgent) Build(rootModel model.LLM) (agent.Agent, error) {
+	ctx := context.Background()
+
+	cfg := llmagent.Config{
+		Name:                  s.Name,
+		Description:           s.Description,
+		Instruction:           s.Instruction,
+		Toolsets:              make([]tool.Toolset, 0, len(s.Skills)),
+		BeforeAgentCallbacks:  s.AgentHooks.Before,
+		AfterAgentCallbacks:   s.AgentHooks.After,
+		BeforeToolCallbacks:   s.ToolHooks.Before,
+		AfterToolCallbacks:    s.ToolHooks.After,
+		OnToolErrorCallbacks:  s.ToolHooks.Error,
+		BeforeModelCallbacks:  s.ModelHooks.Before,
+		AfterModelCallbacks:   s.ModelHooks.After,
+		OnModelErrorCallbacks: s.ModelHooks.Error,
+		OutputKey:             s.OutputKey,
+	}
+
+	// Skill Toolset
+	for _, dir := range s.Skills {
+		source := skill.NewFileSystemSource(os.DirFS(dir))
+		source, _, err := skill.WithCompletePreloadSource(ctx, source)
+		if err != nil {
+			return nil, fmt.Errorf("Toolset: %w", err)
+		}
+
+		toolset, err := skilltoolset.New(ctx, skilltoolset.Config{Source: source})
+		if err != nil {
+			return nil, fmt.Errorf("Toolset: %w", err)
+		}
+		cfg.Toolsets = append(cfg.Toolsets, toolset)
+	}
+
+	// LLM Model
+	if s.LLMAdapter != nil {
+		llmModel, err := s.LLMAdapter.Model()
+		if err != nil {
+			return nil, fmt.Errorf("LLM Model: %w", err)
 		}
 		cfg.Model = llmModel
 	} else {
@@ -218,16 +329,16 @@ func (m *MCPAgent) Build(rootModel model.LLM) (agent.Agent, error) {
 			Transport: transport,
 		})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Toolset: %w", err)
 		}
 		cfg.Toolsets = append(cfg.Toolsets, toolset)
 	}
 
 	// LLM Model
 	if m.LLMAdapter != nil {
-		llmModel, _err := m.LLMAdapter.Model()
-		if _err != nil {
-			return nil, _err
+		llmModel, err := m.LLMAdapter.Model()
+		if err != nil {
+			return nil, fmt.Errorf("LLM Model: %w", err)
 		}
 		cfg.Model = llmModel
 	} else {
@@ -278,7 +389,7 @@ func (a *AgentTool) Build(rootModel model.LLM) (agent.Agent, error) {
 	if a.LLMAdapter != nil {
 		llmModel, err := a.LLMAdapter.Model()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LLM Model: %w", err)
 		}
 		cfg.Model = llmModel
 	} else {
@@ -287,11 +398,11 @@ func (a *AgentTool) Build(rootModel model.LLM) (agent.Agent, error) {
 
 	// Tools
 	for _, v := range a.Tools {
-		_agent, _err := v.Build(cfg.Model)
-		if _err != nil {
-			return nil, _err
+		agent, err := v.Build(cfg.Model)
+		if err != nil {
+			return nil, fmt.Errorf("Agent(Tool): %w", err)
 		}
-		cfg.Tools = append(cfg.Tools, agenttool.New(_agent, nil))
+		cfg.Tools = append(cfg.Tools, agenttool.New(agent, nil))
 	}
 
 	return llmagent.New(cfg)

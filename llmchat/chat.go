@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"iter"
-	"time"
 
 	"github.com/noble-gase/argon/session"
 	"google.golang.org/adk/v2/agent"
@@ -23,15 +22,14 @@ func (c *Chat) Name() string {
 }
 
 // Ask 问答
-func (c *Chat) Ask(ctx context.Context, userId, text string) (iter.Seq2[*adk_session.Event, error], error) {
-	uid := userId + "_" + time.Now().Format("20060102")
-
-	sid, err := c.session.GetOrCreate(ctx, uid)
+func (c *Chat) Ask(ctx context.Context, conversationId, text string) (iter.Seq2[*adk_session.Event, error], error) {
+	sessionId, err := c.session.GetOrCreate(ctx, conversationId)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.runner.Run(ctx, uid, sid,
+	return c.runner.Run(
+		ctx, conversationId, sessionId,
 		genai.NewContentFromText(text, genai.RoleUser),
 		agent.RunConfig{
 			StreamingMode: agent.StreamingModeSSE,

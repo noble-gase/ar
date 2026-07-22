@@ -1,6 +1,8 @@
 package llmchat
 
 import (
+	"fmt"
+
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/workflowagents/loopagent"
 	"google.golang.org/adk/v2/agent/workflowagents/parallelagent"
@@ -33,21 +35,21 @@ func (s *SequentialAgent) Build(rootModel model.LLM) (agent.Agent, error) {
 	if s.LLMAdapter != nil {
 		llmModel, err := s.LLMAdapter.Model()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LLM Model: %w", err)
 		}
 
 		for _, v := range s.SubAgents {
-			subAgent, _err := v.Build(llmModel)
-			if _err != nil {
-				return nil, _err
+			subAgent, err := v.Build(llmModel)
+			if err != nil {
+				return nil, fmt.Errorf("Sub-Agent: %w", err)
 			}
 			cfg.SubAgents = append(cfg.SubAgents, subAgent)
 		}
 	} else {
 		for _, v := range s.SubAgents {
-			subAgent, _err := v.Build(rootModel)
-			if _err != nil {
-				return nil, _err
+			subAgent, err := v.Build(rootModel)
+			if err != nil {
+				return nil, fmt.Errorf("Sub-Agent: %w", err)
 			}
 			cfg.SubAgents = append(cfg.SubAgents, subAgent)
 		}
@@ -85,21 +87,21 @@ func (l *LoopAgent) Build(rootModel model.LLM) (agent.Agent, error) {
 	if l.LLMAdapter != nil {
 		llmModel, err := l.LLMAdapter.Model()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LLM Model: %w", err)
 		}
 
 		for _, v := range l.SubAgents {
-			subAgent, _err := v.Build(llmModel)
-			if _err != nil {
-				return nil, _err
+			subAgent, err := v.Build(llmModel)
+			if err != nil {
+				return nil, fmt.Errorf("Sub-Agent: %w", err)
 			}
 			cfg.SubAgents = append(cfg.SubAgents, subAgent)
 		}
 	} else {
 		for _, v := range l.SubAgents {
-			subAgent, _err := v.Build(rootModel)
-			if _err != nil {
-				return nil, _err
+			subAgent, err := v.Build(rootModel)
+			if err != nil {
+				return nil, fmt.Errorf("Sub-Agent: %w", err)
 			}
 			cfg.SubAgents = append(cfg.SubAgents, subAgent)
 		}
@@ -136,21 +138,21 @@ func (p *ParallelAgent) Build(rootModel model.LLM) (agent.Agent, error) {
 	if p.LLMAdapter != nil {
 		llmModel, err := p.LLMAdapter.Model()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LLM Model: %w", err)
 		}
 
 		for _, v := range p.SubAgents {
-			subAgent, _err := v.Build(llmModel)
-			if _err != nil {
-				return nil, _err
+			subAgent, err := v.Build(llmModel)
+			if err != nil {
+				return nil, fmt.Errorf("Sub-Agent: %w", err)
 			}
 			cfg.SubAgents = append(cfg.SubAgents, subAgent)
 		}
 	} else {
 		for _, v := range p.SubAgents {
-			subAgent, _err := v.Build(rootModel)
-			if _err != nil {
-				return nil, _err
+			subAgent, err := v.Build(rootModel)
+			if err != nil {
+				return nil, fmt.Errorf("Sub-Agent: %w", err)
 			}
 			cfg.SubAgents = append(cfg.SubAgents, subAgent)
 		}

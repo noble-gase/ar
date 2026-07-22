@@ -4,19 +4,19 @@ go 1.25.8
 
 require (
 	github.com/alibabacloud-go/darabonba-openapi/v2 v2.2.4
-	github.com/alibabacloud-go/dingtalk v1.7.40
-	github.com/alibabacloud-go/tea v1.5.2
+	github.com/alibabacloud-go/dingtalk v1.7.41
+	github.com/alibabacloud-go/tea v1.5.3
 	github.com/alibabacloud-go/tea-utils/v2 v2.0.9
-	github.com/anthropics/anthropic-sdk-go v1.57.0
+	github.com/anthropics/anthropic-sdk-go v1.58.1
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/noble-gase/neon v0.2.3
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
-	github.com/openai/openai-go/v3 v3.42.0
+	github.com/openai/openai-go/v3 v3.44.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/tidwall/gjson v1.19.0
 	google.golang.org/adk/v2 v2.0.0
-	google.golang.org/genai v1.63.0
+	google.golang.org/genai v1.64.0
 	gorm.io/gorm v1.31.2
 )
 
@@ -40,7 +40,7 @@ require (
 	github.com/dromara/carbon/v2 v2.6.16 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
+	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
@@ -61,7 +61,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
-	github.com/mattn/go-isatty v0.0.22 // indirect
+	github.com/mattn/go-isatty v0.0.23 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
@@ -83,19 +83,20 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
-	golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597 // indirect
+	golang.org/x/exp v0.0.0-20260718201538-764159d718ef // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	google.golang.org/api v0.288.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260713224248-f5fc221cf8c4 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260713224248-f5fc221cf8c4 // indirect
-	google.golang.org/grpc v1.82.0 // indirect
+	google.golang.org/api v0.289.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260720211330-0afa2a65878a // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260720211330-0afa2a65878a // indirect
+	google.golang.org/grpc v1.82.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )

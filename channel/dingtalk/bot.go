@@ -21,10 +21,11 @@ import (
 type EventHandler func(ctx context.Context, seq iter.Seq2[*session.Event, error], sender *CardSender, outTrackId string)
 
 type Bot struct {
-	chat    *llmchat.Chat
-	card    *CardSender
-	client  *client.StreamClient
-	handler EventHandler
+	chat           *llmchat.Chat
+	card           *CardSender
+	client         *client.StreamClient
+	conversationId func(data *chatbot.BotCallbackDataModel) string
+	eventHandler   EventHandler
 }
 
 func (b *Bot) Start() {
@@ -59,20 +60,28 @@ func (b *Bot) messageHandler(ctx context.Context, data *chatbot.BotCallbackDataM
 		return nil, nil
 	}
 
+	// 会话ID
+	var convId string
+	if b.conversationId != nil {
+		convId = b.conversationId(data)
+	} else {
+		convId = data.SenderStaffId + "_" + time.Now().Format("20060102")
+	}
+
 	// 异步处理，让回调快速返回，避免钉钉超时重试
-	go b.streamAnswer(context.WithoutCancel(ctx), outTrackId, data.SenderStaffId, data.Text.Content)
+	go b.streamAnswer(context.WithoutCancel(ctx), convId, data.Text.Content, outTrackId)
 
 	return nil, nil
 }
 
-func (b *Bot) streamAnswer(ctx context.Context, userId, text, outTrackId string) {
-	seq, err := b.chat.Ask(ctx, userId, text)
+func (b *Bot) streamAnswer(ctx context.Context, conversationId, text, outTrackId string) {
+	seq, err := b.chat.Ask(ctx, conversationId, text)
 	if err != nil {
 		b.card.StreamingUpdate(ctx, outTrackId, "> ⚠️ 出现错误："+err.Error(), true)
 		return
 	}
-	if b.handler != nil {
-		b.handler(ctx, seq, b.card, outTrackId)
+	if b.eventHandler != nil {
+		b.eventHandler(ctx, seq, b.card, outTrackId)
 		return
 	}
 	b.defaultEventHandler(ctx, seq, outTrackId)
@@ -132,6 +141,9 @@ type Config struct {
 	ClientSecret   string
 	CardTemplateId string
 
+	// 会话ID（默认使用「SenderStaffId + 日期」作为会话ID）
+	ConversationId func(data *chatbot.BotCallbackDataModel) string
+
 	// EventHandler specifies a custom function that handles LLM response events.
 	// If not set, the default event handler will be used.
 	EventHandler EventHandler
@@ -147,9 +159,10 @@ func NewBot(cfg *Config, chat *llmchat.Chat, card *CardSender) *Bot {
 	)
 
 	return &Bot{
-		chat:    chat,
-		card:    card,
-		client:  client,
-		handler: cfg.EventHandler,
+		chat:           chat,
+		card:           card,
+		client:         client,
+		conversationId: cfg.ConversationId,
+		eventHandler:   cfg.EventHandler,
 	}
 }
