@@ -93,7 +93,7 @@ import (
 
 func main() {
 	// agent
-	agent := &llmchat.AgentTool{
+	agent := &llmchat.NormalAgent{
 		Name: "iota",
 		Description: "IOTA智能助手",
 		Instruction: `你是一个企业内部智能助手，负责理解用户意图并将任务分发给合适的 Agent 工具。
@@ -107,12 +107,15 @@ func main() {
 				ModelName: "deepseek-v4-flash",
 			},
 		},
-		Tools: []llmchat.AgentBuilder{
-			&llmchat.SkillAgent{
-				Name: "iotlink"
-				Skills: []string{"./skills"},
-				Description: "联接平台相关工具",
-				Instruction: `你是一个物联网「联接平台」相关的工具集合，你可以回答 MQTT 连接相关的问题。
+		AgentTools: []llmchat.AgentToolSource{
+			{
+				Agent: &llmchat.NormalAgent{
+					Name: "iotlink",
+					Skills: []llmchat.SkillSource{
+						{Path: "./skills"},
+					},
+					Description: "联接平台相关工具",
+					Instruction: `你是一个物联网「联接平台」相关的工具集合，你可以回答 MQTT 连接相关的问题。
 ## 基本规则
 - 用中文回答，简洁、准确，使用 Markdown 格式
 - 列表数据，请使用 Markdown 表格输出展示

@@ -139,6 +139,7 @@ func (m *anthropicModel) generateStream(ctx context.Context, req *model.LLMReque
 		}
 
 		stream := m.client.Messages.NewStreaming(ctx, params)
+		defer stream.Close()
 
 		message := anthropic.Message{}
 
@@ -539,7 +540,7 @@ func sanitizeToolId(id string) string {
 	return "toolu_" + hex.EncodeToString(hash[:16])
 }
 
-// repairMessageHistory removes orphaned tool_use blocks (those without a matching tool_result in the next message).
+// repairMessageHistory removes orphaned tool_use and tool_result blocks.
 func repairMessageHistory(messages []anthropic.MessageParam) []anthropic.MessageParam {
 	if len(messages) == 0 {
 		return messages
@@ -547,42 +548,47 @@ func repairMessageHistory(messages []anthropic.MessageParam) []anthropic.Message
 
 	result := make([]anthropic.MessageParam, 0, len(messages))
 
-	for i := range messages {
+	for i := 0; i < len(messages); i++ {
 		msg := messages[i]
 
-		// Check if this assistant message has tool_use blocks
 		if msg.Role == anthropic.MessageParamRoleAssistant {
 			toolUseIds := extractToolUseIds(msg)
-
 			if len(toolUseIds) > 0 {
-				// Check if next message is a user message with matching tool_results
 				if i+1 < len(messages) && messages[i+1].Role == anthropic.MessageParamRoleUser {
-					toolResultIds := extractToolResultIds(messages[i+1])
-
-					// Find which tool_use IDs have matching tool_results
-					matchedIds := make(map[string]bool)
-					for _, id := range toolResultIds {
-						matchedIds[id] = true
+					toolUseSet := make(map[string]bool, len(toolUseIds))
+					for _, id := range toolUseIds {
+						toolUseSet[id] = true
 					}
 
-					// Filter out unmatched tool_use blocks from this message
+					matchedIds := make(map[string]bool)
+					for _, id := range extractToolResultIds(messages[i+1]) {
+						if toolUseSet[id] {
+							matchedIds[id] = true
+						}
+					}
+
 					filteredMsg := filterToolUse(msg, matchedIds)
 					if hasContent(filteredMsg) {
 						result = append(result, filteredMsg)
 					}
-					continue
-				} else {
-					// No following user message with tool_results - remove all tool_use blocks
-					filteredMsg := filterToolUse(msg, nil)
-					if hasContent(filteredMsg) {
-						result = append(result, filteredMsg)
+					filteredResult := filterToolResult(messages[i+1], matchedIds)
+					if hasContent(filteredResult) {
+						result = append(result, filteredResult)
 					}
+					i++
 					continue
 				}
+
+				msg = filterToolUse(msg, nil)
 			}
 		}
 
-		result = append(result, msg)
+		if msg.Role == anthropic.MessageParamRoleUser {
+			msg = filterToolResult(msg, nil)
+		}
+		if hasContent(msg) {
+			result = append(result, msg)
+		}
 	}
 
 	return result
@@ -645,6 +651,21 @@ func filterToolUse(msg anthropic.MessageParam, allowedIds map[string]bool) anthr
 	for _, block := range msg.Content {
 		if block.OfToolUse != nil {
 			if allowedIds != nil && allowedIds[block.OfToolUse.ID] {
+				filteredBlocks = append(filteredBlocks, block)
+			}
+			continue
+		}
+		filteredBlocks = append(filteredBlocks, block)
+	}
+	return anthropic.MessageParam{Role: msg.Role, Content: filteredBlocks}
+}
+
+// filterToolResult keeps tool_result blocks whose IDs are in allowedIds. If allowedIds is nil, removes all tool_result blocks.
+func filterToolResult(msg anthropic.MessageParam, allowedIds map[string]bool) anthropic.MessageParam {
+	var filteredBlocks []anthropic.ContentBlockParamUnion
+	for _, block := range msg.Content {
+		if block.OfToolResult != nil {
+			if allowedIds != nil && allowedIds[block.OfToolResult.ToolUseID] {
 				filteredBlocks = append(filteredBlocks, block)
 			}
 			continue

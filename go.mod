@@ -1,22 +1,21 @@
 module github.com/noble-gase/argon
 
-go 1.25.8
+go 1.26.5
 
 require (
 	github.com/alibabacloud-go/darabonba-openapi/v2 v2.2.4
-	github.com/alibabacloud-go/dingtalk v1.7.41
-	github.com/alibabacloud-go/tea v1.5.3
+	github.com/alibabacloud-go/dingtalk v1.7.42
 	github.com/alibabacloud-go/tea-utils/v2 v2.0.9
-	github.com/anthropics/anthropic-sdk-go v1.58.1
+	github.com/anthropics/anthropic-sdk-go v1.61.0
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/noble-gase/neon v0.2.3
-	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
-	github.com/openai/openai-go/v3 v3.44.0
+	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.2-0.20260705041131-325e7c1049ad
+	github.com/openai/openai-go/v3 v3.46.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/tidwall/gjson v1.19.0
-	google.golang.org/adk/v2 v2.0.0
-	google.golang.org/genai v1.64.0
+	google.golang.org/adk/v2 v2.1.0
+	google.golang.org/genai v1.65.0
 	gorm.io/gorm v1.31.2
 )
 
@@ -26,11 +25,13 @@ require (
 	cel.dev/expr v0.25.2 // indirect
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.22.0 // indirect
+	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/alibabacloud-go/alibabacloud-gateway-spi v0.0.5 // indirect
 	github.com/alibabacloud-go/debug v1.0.1 // indirect
 	github.com/alibabacloud-go/gateway-dingtalk v1.0.3 // indirect
 	github.com/alibabacloud-go/openapi-util v0.1.2 // indirect
+	github.com/alibabacloud-go/tea v1.5.2 // indirect
 	github.com/aliyun/credentials-go v1.4.12 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect

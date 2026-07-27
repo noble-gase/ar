@@ -11,7 +11,6 @@ import (
 	"iter"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/noble-gase/argon/model/common"
 	"github.com/openai/openai-go/v3"
@@ -31,11 +30,6 @@ const maxToolCallIdLength = 40
 type openaiModel struct {
 	client *openai.Client
 	name   string
-
-	// toolCallIdMap stores original IDs when they exceed OpenAI's limit.
-	// Keys are shortened hashes, values are original IDs.
-	toolCallIdMap map[string]string
-	toolCallIdMux sync.RWMutex
 }
 
 // HTTPOptions holds optional HTTP-level configuration for the OpenAI client.
@@ -79,9 +73,8 @@ func NewModel(cfg Config) model.LLM {
 	client := openai.NewClient(opts...)
 
 	return &openaiModel{
-		client:        &client,
-		name:          cfg.ModelName,
-		toolCallIdMap: make(map[string]string),
+		client: &client,
+		name:   cfg.ModelName,
 	}
 }
 
@@ -135,6 +128,8 @@ func (m *openaiModel) generateStream(ctx context.Context, req *model.LLMRequest)
 		}
 
 		stream := m.client.Chat.Completions.NewStreaming(ctx, params)
+		defer stream.Close()
+
 		acc := openai.ChatCompletionAccumulator{}
 
 		// Yield partial responses as chunks arrive
@@ -685,22 +680,6 @@ func (m *openaiModel) normalizeToolCallId(id string) string {
 
 	hash := sha256.Sum256([]byte(id))
 	shortId := "tc_" + hex.EncodeToString(hash[:])[:maxToolCallIdLength-3]
-
-	m.toolCallIdMux.Lock()
-	m.toolCallIdMap[shortId] = id
-	m.toolCallIdMux.Unlock()
-
-	return shortId
-}
-
-// denormalizeToolCallId restores the original ID from a shortened one.
-func (m *openaiModel) denormalizeToolCallId(shortId string) string {
-	m.toolCallIdMux.RLock()
-	defer m.toolCallIdMux.RUnlock()
-
-	if original, exists := m.toolCallIdMap[shortId]; exists {
-		return original
-	}
 	return shortId
 }
 

@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	dingcard "github.com/alibabacloud-go/dingtalk/card_1_0"
 	util "github.com/alibabacloud-go/tea-utils/v2/service"
-	"github.com/alibabacloud-go/tea/tea"
 	"github.com/google/uuid"
 	"github.com/noble-gase/neon/helper"
 	"github.com/noble-gase/neon/httpkit"
@@ -30,15 +30,34 @@ type CardSender struct {
 	clientSecret string
 	templateId   string
 
+	// confirmTemplateId is the template used for Human-in-the-Loop confirmation
+	// cards. It should expose two buttons that call back with a "decision"
+	// param ("approve"/"reject") or action ids ("confirm_approve"/"confirm_reject").
+	confirmTemplateId string
+
 	lockKey  string
 	tokenKey string
 
 	card  *dingcard.Client
 	reduc redis.UniversalClient
+
+	done      chan struct{}
+	cancel    context.CancelFunc
+	closeOnce sync.Once
 }
 
-// CreateAndDeliverRobot 投放「机器人单聊」卡片，返回 outTrackId
-func (s *CardSender) CreateAndDeliverRobot(ctx context.Context, userId, initContent string) (string, error) {
+// Close stops the background access-token refresh goroutine. Safe to call
+// multiple times.
+func (s *CardSender) Close() {
+	s.closeOnce.Do(func() {
+		close(s.done)
+		s.cancel()
+	})
+}
+
+// deliver creates and delivers a card and returns its outTrackId. spaceType is
+// either "IM_ROBOT" (single chat) or "IM_GROUP" (group chat, groupConvId set).
+func (s *CardSender) deliver(ctx context.Context, templateId, spaceType, userId, groupConvId string, params map[string]string) (string, error) {
 	accessToken, err := s.loadAccessToken(ctx)
 	if err != nil {
 		return "", err
@@ -46,80 +65,69 @@ func (s *CardSender) CreateAndDeliverRobot(ctx context.Context, userId, initCont
 
 	outTrackId := uuid.New().String()
 
-	cardParamMap := map[string]*string{
-		"content": tea.String(initContent),
-	}
-
 	req := &dingcard.CreateAndDeliverRequest{
-		CallbackType:   tea.String("STREAM"),
-		CardData:       &dingcard.CreateAndDeliverRequestCardData{CardParamMap: cardParamMap},
-		CardTemplateId: tea.String(s.templateId),
-		ImRobotOpenDeliverModel: &dingcard.CreateAndDeliverRequestImRobotOpenDeliverModel{
-			SpaceType: tea.String("IM_ROBOT"),
-			RobotCode: tea.String(s.clientId),
-		},
-		ImRobotOpenSpaceModel: &dingcard.CreateAndDeliverRequestImRobotOpenSpaceModel{
-			SupportForward: tea.Bool(true),
-		},
-		OpenSpaceId: tea.String(fmt.Sprintf("dtv1.card//im_robot.%s", userId)),
-		OutTrackId:  tea.String(outTrackId),
-		UserId:      tea.String(userId),
-		UserIdType:  tea.Int32(1),
-	}
-
-	headers := &dingcard.CreateAndDeliverHeaders{
-		XAcsDingtalkAccessToken: tea.String(accessToken),
-	}
-
-	_, err = s.card.CreateAndDeliverWithOptions(req, headers, &util.RuntimeOptions{})
-	if err != nil {
-		return "", err
-	}
-	return outTrackId, nil
-}
-
-// CreateAndDeliverGroup 投放「群聊」卡片，返回 outTrackId
-func (s *CardSender) CreateAndDeliverGroup(ctx context.Context, userId, conversationId, initContent string) (string, error) {
-	accessToken, err := s.loadAccessToken(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	outTrackId := uuid.New().String()
-
-	cardParamMap := map[string]*string{
-		"content": tea.String(initContent),
-	}
-
-	req := &dingcard.CreateAndDeliverRequest{
-		CallbackType: tea.String("STREAM"),
+		CallbackType: new("STREAM"),
 		CardData: &dingcard.CreateAndDeliverRequestCardData{
-			CardParamMap: cardParamMap,
+			CardParamMap: map[string]*string{},
 		},
-		CardTemplateId: tea.String(s.templateId),
-		ImGroupOpenDeliverModel: &dingcard.CreateAndDeliverRequestImGroupOpenDeliverModel{
-			RobotCode: tea.String(s.clientId),
-			// 卡片接收人
-			Recipients: []*string{tea.String(userId)},
-		},
-		ImGroupOpenSpaceModel: &dingcard.CreateAndDeliverRequestImGroupOpenSpaceModel{
-			SupportForward: tea.Bool(true),
-		},
-		OpenSpaceId: tea.String(fmt.Sprintf("dtv1.card//im_group.%s", conversationId)),
-		OutTrackId:  tea.String(outTrackId),
-		UserId:      tea.String(userId),
-		UserIdType:  tea.Int32(1),
+		CardTemplateId: new(templateId),
+		OutTrackId:     new(outTrackId),
+		UserId:         new(userId),
+		UserIdType:     new(int32(1)),
+	}
+	if len(params) != 0 {
+		for k, v := range params {
+			req.CardData.CardParamMap[k] = new(v)
+		}
+	}
+
+	switch spaceType {
+	case "IM_GROUP":
+		req.ImGroupOpenDeliverModel = &dingcard.CreateAndDeliverRequestImGroupOpenDeliverModel{
+			RobotCode:  new(s.clientId),
+			Recipients: []*string{new(userId)},
+		}
+		req.ImGroupOpenSpaceModel = &dingcard.CreateAndDeliverRequestImGroupOpenSpaceModel{SupportForward: new(true)}
+		req.OpenSpaceId = new(fmt.Sprintf("dtv1.card//im_group.%s", groupConvId))
+	default: // IM_ROBOT
+		req.ImRobotOpenDeliverModel = &dingcard.CreateAndDeliverRequestImRobotOpenDeliverModel{
+			SpaceType: new("IM_ROBOT"),
+			RobotCode: new(s.clientId),
+		}
+		req.ImRobotOpenSpaceModel = &dingcard.CreateAndDeliverRequestImRobotOpenSpaceModel{SupportForward: new(true)}
+		req.OpenSpaceId = new(fmt.Sprintf("dtv1.card//im_robot.%s", userId))
 	}
 
 	headers := &dingcard.CreateAndDeliverHeaders{
-		XAcsDingtalkAccessToken: tea.String(accessToken),
+		XAcsDingtalkAccessToken: new(accessToken),
 	}
 
-	_, err = s.card.CreateAndDeliverWithOptions(req, headers, &util.RuntimeOptions{})
-	if err != nil {
+	if _, err = s.card.CreateAndDeliverWithOptions(req, headers, &util.RuntimeOptions{}); err != nil {
 		return "", err
 	}
 	return outTrackId, nil
+}
+
+// CreateAndDeliverRobot 投放「机器人单聊」卡片，返回 outTrackId。
+// 卡片正文是流式变量，创建时不设初值（会被忽略），由调用方 StreamingUpdate 推送。
+func (s *CardSender) CreateAndDeliverRobot(ctx context.Context, userId string) (string, error) {
+	return s.deliver(ctx, s.templateId, "IM_ROBOT", userId, "", nil)
+}
+
+// CreateAndDeliverGroup 投放「群聊」卡片，返回 outTrackId。
+// 卡片正文是流式变量，创建时不设初值（会被忽略），由调用方 StreamingUpdate 推送。
+func (s *CardSender) CreateAndDeliverGroup(ctx context.Context, userId, conversationId string) (string, error) {
+	return s.deliver(ctx, s.templateId, "IM_GROUP", userId, conversationId, nil)
+}
+
+// DeliverConfirm 投放「确认」卡片（带同意/拒绝按钮），返回 outTrackId
+func (s *CardSender) DeliverConfirm(ctx context.Context, meta msgMeta, content string) (string, error) {
+	params := map[string]string{"content": content}
+
+	if meta.convType == "2" { // 群聊
+		return s.deliver(ctx, s.confirmTemplateId, "IM_GROUP", meta.userId, meta.groupConvId, params)
+	}
+	return s.deliver(ctx, s.confirmTemplateId, "IM_ROBOT", meta.userId, "", params)
 }
 
 // StreamingUpdate 流式更新卡片内容（全量覆盖）
@@ -130,17 +138,17 @@ func (s *CardSender) StreamingUpdate(ctx context.Context, outTrackId, content st
 		return
 	}
 	request := &dingcard.StreamingUpdateRequest{
-		Content:    tea.String(content),
-		Guid:       tea.String(uuid.New().String()),
-		IsError:    tea.Bool(false),
-		IsFinalize: tea.Bool(finished),
-		IsFull:     tea.Bool(true),
-		Key:        tea.String("content"),
-		OutTrackId: tea.String(outTrackId),
+		Content:    new(content),
+		Guid:       new(uuid.New().String()),
+		IsError:    new(false),
+		IsFinalize: new(finished),
+		IsFull:     new(true),
+		Key:        new("content"),
+		OutTrackId: new(outTrackId),
 	}
 
 	headers := &dingcard.StreamingUpdateHeaders{
-		XAcsDingtalkAccessToken: tea.String(accessToken),
+		XAcsDingtalkAccessToken: new(accessToken),
 	}
 
 	_, err = s.card.StreamingUpdateWithOptions(request, headers, &util.RuntimeOptions{})
@@ -155,6 +163,66 @@ func (s *CardSender) loadAccessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return gjson.Get(str, "token").String(), nil
+}
+
+// pendingConfirm is the persisted state for an in-flight tool confirmation,
+// keyed by the confirmation card's outTrackId.
+type pendingConfirm struct {
+	CallId      string `json:"call_id"`
+	UserId      string `json:"user_id"`
+	ConvType    string `json:"conv_type"`
+	GroupConvId string `json:"group_conv_id"`
+}
+
+func (s *CardSender) pendingKey(outTrackId string) string {
+	return fmt.Sprintf("agent:dingtalk:confirm:%s:%s", s.clientId, outTrackId)
+}
+
+// savePending stores a pending confirmation for up to one hour.
+func (s *CardSender) savePending(ctx context.Context, outTrackId string, p *pendingConfirm) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return s.reduc.Set(ctx, s.pendingKey(outTrackId), string(b), time.Hour).Err()
+}
+
+// loadPending loads a pending confirmation by the confirmation card outTrackId.
+func (s *CardSender) loadPending(ctx context.Context, outTrackId string) (*pendingConfirm, error) {
+	str, err := s.reduc.Get(ctx, s.pendingKey(outTrackId)).Result()
+	if err != nil {
+		return nil, err
+	}
+	var p pendingConfirm
+	if err := json.Unmarshal([]byte(str), &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// getDelScript atomically returns and deletes a key. It replaces the native
+// GETDEL command, which is only available since Redis 6.2; using EVAL keeps
+// compatibility with older Redis servers while preserving atomicity.
+var script = redis.NewScript(`
+local v = redis.call('GET', KEYS[1])
+if v then
+	redis.call('DEL', KEYS[1])
+end
+return v
+`)
+
+// consumePending atomically returns and removes a pending confirmation, so
+// concurrent callbacks cannot resume the same tool call more than once.
+func (s *CardSender) consumePending(ctx context.Context, outTrackId string) (*pendingConfirm, error) {
+	str, err := script.Run(ctx, s.reduc, []string{s.pendingKey(outTrackId)}).Text()
+	if err != nil {
+		return nil, err
+	}
+	var pc pendingConfirm
+	if err := json.Unmarshal([]byte(str), &pc); err != nil {
+		return nil, err
+	}
+	return &pc, nil
 }
 
 func (s *CardSender) refreshAccessToken(ctx context.Context) {
@@ -196,23 +264,34 @@ func (s *CardSender) refreshAccessToken(ctx context.Context) {
 	}
 
 	ret := gjson.ParseBytes(resp.Body())
+	expireIn := ret.Get("expireIn").Int()
 	at := AccessToken{
 		Token:     ret.Get("accessToken").String(),
-		ExpiredAt: time.Now().Unix() + ret.Get("expireIn").Int(),
+		ExpiredAt: time.Now().Unix() + expireIn,
 	}
 	b, _ := json.Marshal(at)
-	if err := s.reduc.Set(ctx, s.tokenKey, string(b), 0).Err(); err != nil {
+	// 设置 TTL，避免刷新协程停止后旧 token 永久残留
+	ttl := time.Duration(expireIn) * time.Second
+	if ttl <= 0 {
+		ttl = 2 * time.Hour
+	}
+	if err := s.reduc.Set(ctx, s.tokenKey, string(b), ttl).Err(); err != nil {
 		slog.ErrorContext(ctx, "[dingtalk card] redis set access_token failed", slog.String("key", s.tokenKey), slog.String("value", string(b)), slog.String("error", err.Error()))
 	}
 }
 
 func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 	client, err := dingcard.NewClient(&openapi.Config{
-		Protocol: tea.String("https"),
-		RegionId: tea.String("central"),
+		Protocol: new("https"),
+		RegionId: new("central"),
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	confirmTemplateId := cfg.CardTemplateId
+	if cfg.ConfirmCard != nil && cfg.ConfirmCard.TemplateId != "" {
+		confirmTemplateId = cfg.ConfirmCard.TemplateId
 	}
 
 	s := &CardSender{
@@ -220,18 +299,38 @@ func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 		clientSecret: cfg.ClientSecret,
 		templateId:   cfg.CardTemplateId,
 
+		confirmTemplateId: confirmTemplateId,
+
 		lockKey:  fmt.Sprintf("mutex:dingtalk:refresh_token:%s", cfg.ClientId),
 		tokenKey: fmt.Sprintf("agent:dingtalk:access_token:%s", cfg.ClientId),
 
 		card:  client,
 		reduc: uc,
+
+		done: make(chan struct{}),
 	}
 
+	initCtx, initCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer initCancel()
+
+	s.refreshAccessToken(initCtx)
+	if _, err = s.loadAccessToken(initCtx); err != nil {
+		return nil, fmt.Errorf("initialize DingTalk access token: %w", err)
+	}
+
+	refreshCtx, refreshCancel := context.WithCancel(context.Background())
+	s.cancel = refreshCancel
+
 	go func() {
-		ctx := context.Background()
-		s.refreshAccessToken(ctx)
-		for range time.Tick(time.Minute) {
-			s.refreshAccessToken(ctx)
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.done:
+				return
+			case <-ticker.C:
+				s.refreshAccessToken(refreshCtx)
+			}
 		}
 	}()
 
