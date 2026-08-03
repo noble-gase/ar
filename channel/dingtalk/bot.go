@@ -47,8 +47,12 @@ func (b *Bot) Start() {
 
 func (b *Bot) Stop() {
 	fmt.Println("Stop ADK dingtalk bot ...")
+
 	b.client.Close()
 	b.card.Close()
+	if err := b.chat.Close(); err != nil {
+		slog.Error("[dingtalk bot] failed to close chat", slog.Any("error", err))
+	}
 }
 
 // recover recovers from a panic in an async handler, logs it with a
@@ -68,7 +72,7 @@ func (b *Bot) recover(ctx context.Context, where, outTrackId string) {
 func (b *Bot) messageHandler(ctx context.Context, data *chatbot.BotCallbackDataModel) ([]byte, error) {
 	ctx = helper.CtxWithTraceId(ctx)
 
-	slog.InfoContext(ctx, "dingtalk message", slog.Any("data", data))
+	slog.InfoContext(ctx, "[dingtalk bot] chat message", slog.Any("data", data))
 
 	var (
 		outTrackId string
@@ -102,7 +106,7 @@ func (b *Bot) streamAnswer(ctx context.Context, meta msgMeta, text, outTrackId s
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 
-	seq, err := b.chat.Ask(ctx, meta.userId, text)
+	seq, err := b.chat.AskAuto(ctx, meta.userId, text)
 	if err != nil {
 		b.card.StreamingUpdate(ctx, outTrackId, "> ⚠️ 出现错误："+err.Error(), true)
 		return

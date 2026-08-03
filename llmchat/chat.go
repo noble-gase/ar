@@ -22,20 +22,66 @@ func (c *Chat) Name() string {
 	return c.session.AppName()
 }
 
-// Ask 问答
-func (c *Chat) Ask(ctx context.Context, conversationId, text string) (iter.Seq2[*adk_session.Event, error], error) {
-	sessionId, err := c.session.GetOrCreate(ctx, conversationId)
+func (c *Chat) AutoModeEnabled() bool {
+	return c.session.AutoModeEnabled()
+}
+
+func (c *Chat) Close() error {
+	return c.session.Close()
+}
+
+// NewConversation creates a new conversation and returns its generated ID.
+func (c *Chat) NewConversation(ctx context.Context, userId string) (string, error) {
+	conversation, err := c.session.CreateConversation(ctx, userId, "")
+	if err != nil {
+		return "", err
+	}
+	return conversation.ID(), nil
+}
+
+// CreateConversation creates a conversation with a caller-provided ID.
+func (c *Chat) CreateConversation(ctx context.Context, userId, conversationId string) error {
+	_, err := c.session.CreateConversation(ctx, userId, conversationId)
+	return err
+}
+
+func (c *Chat) GetConversation(ctx context.Context, userId, conversationId string) (adk_session.Session, error) {
+	return c.session.GetConversation(ctx, userId, conversationId)
+}
+
+func (c *Chat) ListConversations(ctx context.Context, userId, cursor string, limit int) (*session.ConversationPage, error) {
+	return c.session.ListConversations(ctx, userId, cursor, limit)
+}
+
+func (c *Chat) DeleteConversation(ctx context.Context, userId, conversationId string) error {
+	return c.session.DeleteConversation(ctx, userId, conversationId)
+}
+
+// Ask sends a message to an existing explicit conversation.
+func (c *Chat) Ask(ctx context.Context, userId, conversationId, text string) (iter.Seq2[*adk_session.Event, error], error) {
+	if err := c.session.TouchConversation(ctx, userId, conversationId); err != nil {
+		return nil, err
+	}
+	return c.run(ctx, userId, conversationId, genai.NewContentFromText(text, genai.RoleUser)), nil
+}
+
+// AskAuto sends a message using the current automatic conversation for userId.
+// It is intended for channels such as DingTalk that do not manage conversation IDs.
+func (c *Chat) AskAuto(ctx context.Context, userId, text string) (iter.Seq2[*adk_session.Event, error], error) {
+	sessionId, err := c.session.GetOrCreate(ctx, userId)
 	if err != nil {
 		return nil, err
 	}
+	return c.run(ctx, userId, sessionId, genai.NewContentFromText(text, genai.RoleUser)), nil
+}
 
+func (c *Chat) run(ctx context.Context, userId, sessionId string, content *genai.Content) iter.Seq2[*adk_session.Event, error] {
 	return c.runner.Run(
-		ctx, conversationId, sessionId,
-		genai.NewContentFromText(text, genai.RoleUser),
+		ctx, userId, sessionId, content,
 		agent.RunConfig{
 			StreamingMode: agent.StreamingModeSSE,
 		},
-	), nil
+	)
 }
 
 // Confirmation describes a pending Human-in-the-Loop tool confirmation request
@@ -84,16 +130,27 @@ func ConfirmationOf(event *adk_session.Event) (*Confirmation, bool) {
 	return nil, false
 }
 
-// Confirm resumes a paused tool-confirmation run with the user's decision.
-// conversationId must be the same value used in the original Ask call, and
-// callID is the Confirmation.CallID surfaced by ConfirmationOf. payload is an
+// Confirm resumes a paused tool-confirmation run in an explicit conversation.
+// userId and conversationId must be the values used in the original Ask call, and
+// callId is the Confirmation.CallID surfaced by ConfirmationOf. payload is an
 // optional application-specific value forwarded to the tool (may be nil).
-func (c *Chat) Confirm(ctx context.Context, conversationId, callId string, approved bool, payload any) (iter.Seq2[*adk_session.Event, error], error) {
-	sid, err := c.session.GetOrCreate(ctx, conversationId)
+func (c *Chat) Confirm(ctx context.Context, userId, conversationId, callId string, approved bool, payload any) (iter.Seq2[*adk_session.Event, error], error) {
+	if err := c.session.TouchConversation(ctx, userId, conversationId); err != nil {
+		return nil, err
+	}
+	return c.confirm(ctx, userId, conversationId, callId, approved, payload), nil
+}
+
+// ConfirmAuto resumes a confirmation in the current automatic conversation.
+func (c *Chat) ConfirmAuto(ctx context.Context, userId, callId string, approved bool, payload any) (iter.Seq2[*adk_session.Event, error], error) {
+	sessionId, err := c.session.GetOrCreate(ctx, userId)
 	if err != nil {
 		return nil, err
 	}
+	return c.confirm(ctx, userId, sessionId, callId, approved, payload), nil
+}
 
+func (c *Chat) confirm(ctx context.Context, userId, sessionId, callId string, approved bool, payload any) iter.Seq2[*adk_session.Event, error] {
 	response := map[string]any{
 		"confirmed": approved,
 	}
@@ -112,12 +169,7 @@ func (c *Chat) Confirm(ctx context.Context, conversationId, callId string, appro
 		}},
 	}
 
-	return c.runner.Run(
-		ctx, conversationId, sid, content,
-		agent.RunConfig{
-			StreamingMode: agent.StreamingModeSSE,
-		},
-	), nil
+	return c.run(ctx, userId, sessionId, content)
 }
 
 func NewChat(agent agent.Agent, session *session.Session) (*Chat, error) {

@@ -158,6 +158,10 @@ func (s *CardSender) StreamingUpdate(ctx context.Context, outTrackId, content st
 }
 
 func (s *CardSender) loadAccessToken(ctx context.Context) (string, error) {
+	if s.reduc == nil {
+		return "", errors.New("missing redis client")
+	}
+
 	str, err := s.reduc.Get(ctx, s.tokenKey).Result()
 	if err != nil {
 		return "", err
@@ -175,7 +179,7 @@ type pendingConfirm struct {
 }
 
 func (s *CardSender) pendingKey(outTrackId string) string {
-	return fmt.Sprintf("agent:dingtalk:confirm:%s:%s", s.clientId, outTrackId)
+	return fmt.Sprintf("adk:confirm:dingtalk:%s:%s", s.clientId, outTrackId)
 }
 
 // savePending stores a pending confirmation for up to one hour.
@@ -301,8 +305,8 @@ func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 
 		confirmTemplateId: confirmTemplateId,
 
-		lockKey:  fmt.Sprintf("mutex:dingtalk:refresh_token:%s", cfg.ClientId),
-		tokenKey: fmt.Sprintf("agent:dingtalk:access_token:%s", cfg.ClientId),
+		lockKey:  fmt.Sprintf("adk:mutex:dingtalk:%s", cfg.ClientId),
+		tokenKey: fmt.Sprintf("adk:access_token:dingtalk:%s", cfg.ClientId),
 
 		card:  client,
 		reduc: uc,

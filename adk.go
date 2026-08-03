@@ -1,6 +1,8 @@
 package argon
 
 import (
+	"errors"
+
 	"github.com/noble-gase/argon/channel/dingtalk"
 	"github.com/noble-gase/argon/llmchat"
 	"github.com/noble-gase/argon/session"
@@ -15,9 +17,9 @@ func NewLLMAgent(builder llmchat.AgentBuilder) (agent.Agent, error) {
 }
 
 // NewLLMChat returns a LLM chat.
-func NewLLMChat(name string, db gorm.Dialector, uc redis.UniversalClient, ab llmchat.AgentBuilder) (*llmchat.Chat, error) {
+func NewLLMChat(name string, db gorm.Dialector, ab llmchat.AgentBuilder, opts ...session.Option) (*llmchat.Chat, error) {
 	// Session
-	session, err := session.New(name, db, uc)
+	session, err := session.New(name, db, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -25,12 +27,14 @@ func NewLLMChat(name string, db gorm.Dialector, uc redis.UniversalClient, ab llm
 	// Agent
 	agent, err := ab.Build(nil)
 	if err != nil {
+		_ = session.Close()
 		return nil, err
 	}
 
 	// Chat
 	chat, err := llmchat.NewChat(agent, session)
 	if err != nil {
+		_ = session.Close()
 		return nil, err
 	}
 	return chat, nil
@@ -50,6 +54,13 @@ func (dta *DingTalkAssistant) Stop() {
 
 // NewDingTalkAssistant returns a DingTalk assistant.
 func NewDingTalkAssistant(cfg *dingtalk.Config, uc redis.UniversalClient, chat *llmchat.Chat) (*DingTalkAssistant, error) {
+	if chat == nil {
+		return nil, errors.New("chat is required")
+	}
+	if !chat.AutoModeEnabled() {
+		return nil, session.ErrAutoModeUnavailable
+	}
+
 	card, err := dingtalk.NewCardSender(cfg, uc)
 	if err != nil {
 		return nil, err
