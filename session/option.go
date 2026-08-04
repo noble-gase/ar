@@ -4,20 +4,18 @@ import (
 	"time"
 )
 
-// Option configures a Session.
+// Option 用于配置 Session。
 type Option func(*Session)
 
-// WithAutoMode enables automatic conversations (for channels such as DingTalk
-// that do not manage conversation IDs). Without it only explicit conversations
-// are available and GetOrCreate returns ErrAutoModeUnavailable. Automatic
-// conversations are tracked in the conversation metadata store; no redis is
-// required.
+// WithAutoMode 启用自动会话模式，适用于钉钉等不管理会话 ID 的渠道。
+// 未启用时仅支持显式会话，GetOrCreate 会返回 ErrAutoModeUnavailable。
+// 自动会话由会话元数据存储跟踪，不依赖 Redis。
 func WithAutoMode() Option {
 	return func(s *Session) { s.autoMode = true }
 }
 
-// WithReconcileInterval configures periodic recovery of interrupted explicit
-// conversation operations. A non-positive duration disables the worker.
+// WithReconcileInterval 配置显式会话中断操作的周期恢复间隔。
+// 非正数会禁用后台协调任务。
 func WithReconcileInterval(d time.Duration) Option {
 	return func(s *Session) { s.reconcileEvery = d }
 }

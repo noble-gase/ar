@@ -135,7 +135,7 @@ func TestCreateConversationRejectsEmptyUser(t *testing.T) {
 }
 
 func TestGetOrCreateRequiresAutoMode(t *testing.T) {
-	manager := newTestManager(t) // autoMode is disabled
+	manager := newTestManager(t) // autoMode 默认关闭
 
 	if _, err := manager.GetOrCreate(context.Background(), "user-1"); !errors.Is(err, ErrAutoModeUnavailable) {
 		t.Fatalf("GetOrCreate(auto disabled) error = %v, want ErrAutoModeUnavailable", err)
@@ -163,7 +163,7 @@ func TestGetOrCreateReusesAndRotates(t *testing.T) {
 		t.Fatalf("GetOrCreate() reused id = %q, want %q", second, first)
 	}
 
-	// Age the pointer into a previous calendar day so the next call rotates.
+	// 将指针时间调整到前一个自然日，使下次调用触发轮换。
 	repo := manager.convRepo.(*gormConversationRepository)
 	if err := repo.db.WithContext(ctx).Model(&autoConversation{}).
 		Where("app_name = ? AND user_id = ?", "test", "user-1").
@@ -274,8 +274,8 @@ func TestGetOrCreateRecoversCreatedSessionOnTakeover(t *testing.T) {
 	manager.autoMode = true
 	now := time.Now()
 
-	// A prior creator claimed with an id, created its session, then crashed
-	// before completing: an expired creating claim plus an orphan session.
+	// 前一个创建者完成 claim 和会话创建后，在完成元数据前崩溃：
+	// 此时会留下过期的 creating claim 和待恢复会话。
 	if _, claimed, err := manager.convRepo.ClaimAuto(
 		ctx, "test", "user-1", "crashed-token", "orphan-session", now, time.Time{}, now.Add(-time.Second),
 	); err != nil || !claimed {
@@ -391,7 +391,7 @@ func TestCreateConversationDoesNotDeleteConflictingSession(t *testing.T) {
 	}
 	defer manager.Close()
 
-	// An untracked session already owns this id (e.g. created out-of-band via Service()).
+	// 一个未纳入元数据管理的会话已占用此 ID，例如通过 Service 在外部创建。
 	if _, err := manager.Service().Create(ctx, &adksession.CreateRequest{
 		AppName: "app", UserID: "user-1", SessionID: "dup-1",
 	}); err != nil {
@@ -402,7 +402,7 @@ func TestCreateConversationDoesNotDeleteConflictingSession(t *testing.T) {
 		t.Fatal("CreateConversation() error = nil, want duplicate failure")
 	}
 
-	// The pre-existing session must survive the failed create.
+	// 创建失败后，原有会话必须继续存在。
 	if _, err := manager.Service().Get(ctx, &adksession.GetRequest{
 		AppName: "app", UserID: "user-1", SessionID: "dup-1",
 	}); err != nil {

@@ -318,7 +318,7 @@ func TestReconcileConversationsFailsOrphanedCreate(t *testing.T) {
 	}
 }
 
-// racingReconcilerRepository simulates a committed transition whose response was lost.
+// racingReconcilerRepository 模拟状态转换已提交但响应丢失的场景。
 type racingReconcilerRepository struct {
 	ConversationRepository
 }
@@ -349,7 +349,7 @@ func TestCreateConversationToleratesReconcilerRace(t *testing.T) {
 	if created == nil || created.ID() != "conversation-1" {
 		t.Fatalf("CreateConversation() session = %v, want conversation-1", created)
 	}
-	// The ADK session must survive: no erroneous compensation delete.
+	// ADK 会话必须继续存在，不能执行错误的补偿删除。
 	if _, err := service.Get(ctx, &adksession.GetRequest{
 		AppName: "app", UserID: "user-1", SessionID: "conversation-1",
 	}); err != nil {
@@ -360,8 +360,8 @@ func TestCreateConversationToleratesReconcilerRace(t *testing.T) {
 	}
 }
 
-// failingActivateRepository fails creating->active without committing, leaving
-// the row in creating so the reconciler must promote it later.
+// failingActivateRepository 模拟 creating 到 active 的转换未提交便失败，
+// 记录会保留在 creating，随后必须由协调器推进状态。
 type failingActivateRepository struct {
 	ConversationRepository
 }
@@ -386,7 +386,7 @@ func TestCreateConversationKeepsSessionOnActivateFailure(t *testing.T) {
 	if _, err := manager.CreateConversation(ctx, "user-1", "conversation-1"); err == nil {
 		t.Fatal("CreateConversation() error = nil, want activate failure")
 	}
-	// No compensating delete: the created session must remain for the reconciler.
+	// 不能执行补偿删除，已创建的会话必须保留给协调器处理。
 	if _, err := service.Get(ctx, &adksession.GetRequest{
 		AppName: "app", UserID: "user-1", SessionID: "conversation-1",
 	}); err != nil {
@@ -400,7 +400,7 @@ func TestCreateConversationKeepsSessionOnActivateFailure(t *testing.T) {
 		t.Fatalf("metadata status = %q, want creating", metadata.Status)
 	}
 
-	// The reconciler promotes the interrupted creating row to active.
+	// 协调器将中断后遗留的 creating 记录推进为 active。
 	recovered := &Session{name: "app", convRepo: repo, service: service}
 	if err := recovered.ReconcileConversations(ctx); err != nil {
 		t.Fatalf("ReconcileConversations() error = %v", err)
@@ -519,7 +519,7 @@ func TestReconcileDeletingNeverBecomesTerminal(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	// Exceed the creating cap; a deleting conversation must keep retrying.
+	// 即使超过 creating 的重试上限，deleting 会话也必须继续重试。
 	for attempt := 1; attempt <= maxReconcileAttempts+2; attempt++ {
 		if err := manager.ReconcileConversations(ctx); err == nil {
 			t.Fatalf("ReconcileConversations() attempt %d error = nil", attempt)
