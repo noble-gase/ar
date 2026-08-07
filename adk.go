@@ -1,8 +1,6 @@
 package argon
 
 import (
-	"errors"
-
 	"github.com/noble-gase/argon/channel/dingtalk"
 	"github.com/noble-gase/argon/llmchat"
 	"github.com/noble-gase/argon/session"
@@ -48,10 +46,6 @@ func (dta *DingTalkAssistant) Stop() {
 
 // NewDingTalkAssistant returns a DingTalk assistant.
 func NewDingTalkAssistant(cfg *dingtalk.Config, uc redis.UniversalClient, chat *llmchat.Chat) (*DingTalkAssistant, error) {
-	if chat == nil {
-		return nil, errors.New("chat is required")
-	}
-
 	card, err := dingtalk.NewCardSender(cfg, uc)
 	if err != nil {
 		return nil, err
