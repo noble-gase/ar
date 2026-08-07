@@ -17,27 +17,21 @@ func NewLLMAgent(builder llmchat.AgentBuilder) (agent.Agent, error) {
 }
 
 // NewLLMChat returns a LLM chat.
-func NewLLMChat(name string, db gorm.Dialector, ab llmchat.AgentBuilder, opts ...session.Option) (*llmchat.Chat, error) {
-	// Session
-	session, err := session.New(name, db, opts...)
+func NewLLMChat(name string, db gorm.Dialector, ab llmchat.AgentBuilder) (*llmchat.Chat, error) {
+	// Agent
+	agent, err := ab.Build(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	// Agent
-	agent, err := ab.Build(nil)
+	// Session
+	session, err := session.New(name, db)
 	if err != nil {
-		_ = session.Close()
 		return nil, err
 	}
 
 	// Chat
-	chat, err := llmchat.NewChat(agent, session)
-	if err != nil {
-		_ = session.Close()
-		return nil, err
-	}
-	return chat, nil
+	return llmchat.NewChat(agent, session)
 }
 
 type DingTalkAssistant struct {
@@ -56,9 +50,6 @@ func (dta *DingTalkAssistant) Stop() {
 func NewDingTalkAssistant(cfg *dingtalk.Config, uc redis.UniversalClient, chat *llmchat.Chat) (*DingTalkAssistant, error) {
 	if chat == nil {
 		return nil, errors.New("chat is required")
-	}
-	if !chat.AutoModeEnabled() {
-		return nil, session.ErrAutoModeUnavailable
 	}
 
 	card, err := dingtalk.NewCardSender(cfg, uc)

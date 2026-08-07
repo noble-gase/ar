@@ -172,7 +172,7 @@ func (b *Bot) resumeConfirmed(ctx context.Context, meta msgMeta, callId string, 
 
 	defer b.recover(ctx, "resumeConfirmed", outTrackId)
 
-	seq, err := b.chat.ConfirmAuto(ctx, meta.userId, callId, approved, nil)
+	seq, err := b.chat.Confirm(ctx, meta.userId, callId, approved, nil)
 	if err != nil {
 		b.card.StreamingUpdate(ctx, outTrackId, "> ⚠️ 出现错误："+err.Error(), true)
 		return

@@ -50,9 +50,6 @@ func (b *Bot) Stop() {
 
 	b.client.Close()
 	b.card.Close()
-	if err := b.chat.Close(); err != nil {
-		slog.Error("[dingtalk bot] failed to close chat", slog.Any("error", err))
-	}
 }
 
 // recover recovers from a panic in an async handler, logs it with a
@@ -106,7 +103,7 @@ func (b *Bot) streamAnswer(ctx context.Context, meta msgMeta, text, outTrackId s
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 
-	seq, err := b.chat.AskAuto(ctx, meta.userId, text)
+	seq, err := b.chat.Ask(ctx, meta.userId, text)
 	if err != nil {
 		b.card.StreamingUpdate(ctx, outTrackId, "> ⚠️ 出现错误："+err.Error(), true)
 		return
