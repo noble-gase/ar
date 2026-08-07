@@ -15,9 +15,9 @@ func NewLLMAgent(builder llmchat.AgentBuilder) (agent.Agent, error) {
 }
 
 // NewLLMChat returns a LLM chat.
-func NewLLMChat(name string, db gorm.Dialector, ab llmchat.AgentBuilder) (*llmchat.Chat, error) {
+func NewLLMChat(name string, db gorm.Dialector, builder llmchat.AgentBuilder) (*llmchat.Chat, error) {
 	// Agent
-	agent, err := ab.Build(nil)
+	agent, err := builder.Build(nil)
 	if err != nil {
 		return nil, err
 	}
