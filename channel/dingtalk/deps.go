@@ -8,12 +8,11 @@ import (
 	"google.golang.org/adk/v2/session"
 )
 
-// cardStore is the card surface the Bot depends on. It exists so the
-// orchestration branches can be exercised without a DingTalk client or a live
-// Redis. *CardSender implements it.
+// cardStore 是 Bot 依赖的卡片接口。抽出它是为了在没有钉钉客户端、也没有真实
+// Redis 的情况下也能覆盖各条编排分支。*CardSender 实现了它。
 //
-// 待回答问题不在这里：它们由 ADK 会话重建（chatClient.PendingInputs），渠道侧不再
-// 维护副本，也就没有缓存一致性问题。这里只保留会话里没有的东西——确认卡片的
+// 待回答问题与待确认的工具调用不在这里：它们由 ADK 会话重建（chatClient.Pending），渠道
+// 侧不再维护副本，也就没有缓存一致性问题。这里只保留会话里没有的东西——确认卡片的
 // outTrackId 到 callId 的映射，以及跨实例的用户锁。
 type cardStore interface {
 	Close()
@@ -27,20 +26,19 @@ type cardStore interface {
 	savePending(ctx context.Context, outTrackId string, p *pendingConfirm) error
 	loadPending(ctx context.Context, outTrackId string) (*pendingConfirm, error)
 	dropPending(ctx context.Context, outTrackId, userId string) error
-	clearConfirms(ctx context.Context, userId string) error
+	clearConfirms(ctx context.Context, userId string) ([]string, error)
 
-	// lockUser serializes one user's messages across all bot instances. The
-	// returned context is cancelled if the lock is lost.
+	// lockUser 让同一个用户的消息在所有 bot 实例间串行化。锁一旦丢失，返回的
+	// context 会被取消。
 	lockUser(ctx context.Context, userId string) (context.Context, func(), error)
 }
 
-// chatClient is the conversation surface the Bot depends on. *llmchat.Chat
-// implements it.
+// chatClient 是 Bot 依赖的会话接口。*llmchat.Chat 实现了它。
 type chatClient interface {
 	Ask(ctx context.Context, userId, text string) (string, iter.Seq2[*session.Event, error], error)
 	Reply(ctx context.Context, userId, interruptId string, payload any) (string, iter.Seq2[*session.Event, error], error)
 	Confirm(ctx context.Context, userId, conversationId, callId string, approved bool, payload any) (iter.Seq2[*session.Event, error], error)
-	PendingInputs(ctx context.Context, userId string) ([]*llmchat.RequestInput, error)
+	Pending(ctx context.Context, userId string) (*llmchat.Pending, error)
 	ResetAutomatic(ctx context.Context, userId string) error
 }
 

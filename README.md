@@ -30,6 +30,10 @@ go get github.com/noble-gase/argon
 package main
 
 import (
+	"context"
+	"os/signal"
+	"syscall"
+
 	"github.com/noble-gase/argon"
 	"github.com/noble-gase/argon/channel/dingtalk"
 	"github.com/noble-gase/argon/llmchat"
@@ -82,9 +86,18 @@ func main() {
 	}
 	defer assistant.Stop()
 
-	assistant.Start()
+	if err := assistant.Start(); err != nil {
+		panic(err)
+	}
+
+	// 阻塞到收到停止信号，Stop 会等在途消息跑完
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
 }
 ```
+
+> `Bot` 是一次性的：`Stop` 之后不能再 `Start`（会返回错误），需要继续服务请新建实例。
 
 只需要 Agent 实例而不需要会话与渠道时，使用 `argon.NewLLMAgent(builder)`。
 
@@ -391,12 +404,15 @@ cfg := &dingtalk.Config{
 	ConfirmCard: &dingtalk.ConfirmCard{
 		TemplateId: "yyyyyy.schema", // 留空则复用 CardTemplateId
 		ParamKey:   "action",
-		Approve:    dingtalk.ConfirmAction{Value: "approve", Params: map[string]string{"status": "approved"}},
-		Reject:     dingtalk.ConfirmAction{Value: "reject", Params: map[string]string{"status": "rejected"}},
+		Approve:    dingtalk.ConfirmAction{Value: "approve"},
+		Reject:     dingtalk.ConfirmAction{Value: "reject"},
 	},
-	Timeout: time.Hour, // 单次运行（LLM + 工具调用）总时长上限，默认 1 小时
+	Timeout:       time.Hour,        // 单次运行（LLM + 工具调用）总时长上限，默认 1 小时
+	ShutdownGrace: 15 * time.Second, // 停机时让在途消息自然跑完的宽限期，默认 15 秒
 }
 ```
+
+`Stop` 会先停止接收，再等在途消息自然结束；超过 `ShutdownGrace` 才发出取消。有上限的只是这段自然排空——取消之后 `Stop` 仍会等 handler 真正退出，因为 Go 杀不死 goroutine，提前返回并关闭卡片客户端只会让残留任务写已关闭的资源。完全忽略 context 的任务只能由进程管理器（如 Kubernetes 的 `terminationGracePeriodSeconds`）兜底，把它配得比 `ShutdownGrace` 长。
 
 ### 人工输入（图工作流）
 
@@ -426,11 +442,13 @@ for event, err := range events {
 - 节点提问写回当前卡片，用户的**下一条聊天消息**即作为回答送回图中
 - 扇出会让多个节点同一轮暂停，此时按发起顺序逐个提问，一条消息回答一个，卡片提示还剩几个
 - 节点要求结构化回答时，卡片会附上 schema 并提示以 JSON 回复；回答不合要求时同一个问题会被再问一次
-- 回复 `/cancel` 或 `取消` 可放弃全部待回答问题（会重置当前自动会话），关键词通过 `dingtalk.Config.CancelKeywords` 自定义
+- 回复 `/cancel` 或 `取消` 可放弃全部待回答问题与待处理的工具确认（会重置当前自动会话），关键词通过 `dingtalk.Config.CancelKeywords` 自定义
 
-> **状态一致性**：待回答问题**只存在于 ADK 会话中**，渠道侧不维护任何副本——每轮消息都用 `Chat.PendingInputs` 从会话历史重建。因此不存在缓存过期、队列与会话不一致的问题。会话状态读取失败时会提示稍后重试，而不会把回答误当成新提问、也不会显示成流程已结束。
+> **消息路由**：一次只走一条路。有工具确认挂着时，普通消息不会另起一轮，而是提示先在确认卡上做决定或回复「取消」——否则确认卡指向的执行会和新一轮同时挂在一个会话上。图工作流的待答问题则相反：下一条消息就是回答。两者都由 `Chat.Pending` 一次性从会话历史重建，不看渠道侧的记录。
+
+> **状态一致性**：待回答问题与待确认的工具调用**只存在于 ADK 会话中**，渠道侧不维护任何副本——每轮消息都用 `Chat.Pending` 从会话历史重建（待答问题与待确认调用共用一次加载）。因此不存在缓存过期、队列与会话不一致的问题：确认记录丢了不会放行新一轮，记录残留也不会把用户挡在门外。会话状态读取失败时会提示稍后重试，而不会把回答误当成新提问、也不会显示成流程已结束。
 >
-> **多实例部署**：聊天消息与确认卡片回调都经同一把 Redis 分布式锁串行化（按用户加锁、持锁期间自动续期、只释放自己持有的锁），不会出现两个 runner 并发驱动同一会话。Redis 在这里只保存两样东西：确认卡片的 `outTrackId → callId` 映射，以及这把用户锁。
+> **多实例部署**：聊天消息与确认卡片回调都经同一把 Redis 分布式锁串行化（按用户加锁、持锁期间自动续期、只释放自己持有的锁），不会出现两个 runner 并发驱动同一会话。Redis 在这里只保存两样东西：确认卡片的 `outTrackId → callId` 映射，以及这把用户锁。两者丢失都不影响正确性，只影响体验。
 
 ## 会话
 
@@ -438,22 +456,24 @@ for event, err := range events {
 
 钉钉等不管理对话 ID 的渠道使用 `Ask` / `Confirm`。会话 ID 由（应用, 用户, 自然日）确定性派生，跨自然日自动轮转到新会话（日界按服务器本地时区 `time.Local` 计算）。并发调用与崩溃重试会天然收敛到同一个会话。
 
-`Ask` / `Reply` 会返回本次运行所在的会话。需要把状态存到进程外（例如一张等待点击的确认卡片）时必须记下它，之后原样传回 `Confirm`——不要在恢复时重新解析。会话已轮转时 `Confirm` 返回 `ErrConversationChanged`，避免去恢复一次早已被放弃的执行：
+`Ask` / `Reply` 会返回本次运行所在的会话。需要把状态存到进程外（例如一张等待点击的确认卡片）时必须记下它，之后原样传回 `Confirm`——不要在恢复时重新解析。`Confirm` 恢复前会核对会话与会话历史，三种失效各自有明确的错误：
 
 ```go
 conversationId, events, err := chat.Ask(ctx, userId, text)
 
 // 用户点击确认按钮后，带上当初那个会话
 events, err = chat.Confirm(ctx, userId, conversationId, callId, true, nil)
-if errors.Is(err, llmchat.ErrConversationChanged) {
+switch {
+case errors.Is(err, llmchat.ErrConversationChanged):
     // 已经跨日，这次确认不再可恢复，提示用户重新发起
-}
-if errors.Is(err, llmchat.ErrAlreadyConfirmed) {
+case errors.Is(err, llmchat.ErrAlreadyConfirmed):
     // 重复点击，工具不会被执行第二次
+case errors.Is(err, llmchat.ErrConfirmationNotFound):
+    // 会话被重置，这个 callId 已随历史一起消失
 }
 ```
 
-> 会话 ID 只能识别跨日轮转。当天调用 `ResetAutomatic` 会重建出同一个确定性 ID，那种情况要靠渠道侧主动作废旧卡片（钉钉实现中的 `clearConfirms`）。
+> 判定依据始终是 ADK 会话，不是渠道侧的缓存：缓存清理失败不会造成重复执行。同日 `ResetAutomatic` 会重建出同一个确定性 ID，`ErrConversationChanged` 认不出来，由 `ErrConfirmationNotFound` 兜住。
 
 ### 显式会话
 

@@ -10,25 +10,21 @@ import (
 	"google.golang.org/adk/v2/workflow"
 )
 
-// Confirmation describes a pending Human-in-the-Loop tool confirmation request
-// extracted from an event stream.
+// Confirmation 描述从事件流里提取出的、待人工确认的工具调用请求。
 type Confirmation struct {
-	// CallId is the ID that must be passed back to Confirm to resume execution.
+	// CallId 是恢复执行时必须传回给 Confirm 的 ID。
 	CallId string
-	// ToolName is the tool the agent intends to run once approved.
+	// ToolName 是获批后 agent 打算执行的工具。
 	ToolName string
-	// Args are the arguments the agent intends to call the tool with. May be nil.
+	// Args 是 agent 打算传给工具的参数，可能为 nil。
 	Args map[string]any
-	// Hint is a human-readable prompt explaining why confirmation is needed and
-	// what action is being confirmed.
+	// Hint 是给人看的说明，解释为什么需要确认、正在确认什么动作。
 	Hint string
-	// Payload carries application-specific context attached to the confirmation
-	// request. Its structure is defined by the tool. May be nil.
+	// Payload 携带附在确认请求上的应用自定义上下文，结构由工具决定，可能为 nil。
 	Payload any
 }
 
-// ConfirmationOf returns the pending tool confirmation carried by an event, if
-// any. It reports false when the event is not a confirmation request.
+// ConfirmationOf 返回事件里携带的待确认工具调用。事件不是确认请求时返回 false。
 func ConfirmationOf(event *adk_session.Event) (*Confirmation, bool) {
 	if event == nil || event.Content == nil {
 		return nil, false
@@ -56,24 +52,21 @@ func ConfirmationOf(event *adk_session.Event) (*Confirmation, bool) {
 	return nil, false
 }
 
-// RequestInput describes a pending human-input request raised by a graph
-// workflow node (GraphAgent). Unlike Confirmation, which gates a tool call with
-// approve/reject, it asks the user for a free-form answer.
+// RequestInput 描述图工作流节点（GraphAgent）发起的、待人工输入的请求。
+// 与 Confirmation 用同意/拒绝拦截工具调用不同，它是向用户要一段自由文本回答。
 type RequestInput struct {
-	// InterruptId is the ID that must be passed back to Reply to resume the graph.
+	// InterruptId 是恢复图执行时必须传回给 Reply 的 ID。
 	InterruptId string
-	// Message is the prompt shown to the user.
+	// Message 是展示给用户的提问。
 	Message string
-	// Payload carries node-specific context attached to the request. Its
-	// structure is defined by the node. May be nil.
+	// Payload 携带附在请求上的节点自定义上下文，结构由节点决定，可能为 nil。
 	Payload any
-	// ResponseSchema, when non-nil, is the schema the answer passed to Reply must
-	// conform to. Use ReplyPayload to turn a text answer into a conforming value.
+	// ResponseSchema 非 nil 时，传给 Reply 的回答必须符合这个 schema。
+	// 用 ReplyPayload 可以把文本回答转成符合要求的值。
 	ResponseSchema *jsonschema.Schema
 }
 
-// RequestInputOf returns the pending human-input request carried by an event, if
-// any. It reports false when the event is not an input request.
+// RequestInputOf 返回事件里携带的待人工输入请求。事件不是输入请求时返回 false。
 func RequestInputOf(event *adk_session.Event) (*RequestInput, bool) {
 	if event == nil {
 		return nil, false
@@ -128,10 +121,9 @@ func decodeSchema(v any) *jsonschema.Schema {
 	return &s
 }
 
-// ReplyPayload converts a free-form text answer into the value expected by the
-// node: when the node asks for structured data the text is decoded as JSON,
-// otherwise it is passed through verbatim. Text that should be JSON but fails to
-// parse is passed through as-is, so the node's own schema validation reports it.
+// ReplyPayload 把自由文本回答转换成节点期望的值：节点要结构化数据时，文本会
+// 按 JSON 解码，否则原样传递。本该是 JSON 却解析失败的文本会原样传过去，
+// 交由节点自己的 schema 校验来报错。
 func ReplyPayload(text string, schema *jsonschema.Schema) any {
 	if schema == nil || schema.Type == "" || schema.Type == "string" {
 		return text
@@ -144,9 +136,8 @@ func ReplyPayload(text string, schema *jsonschema.Schema) any {
 	return decoded
 }
 
-// IsRejectedReply reports whether the error means the answer passed to Reply did
-// not match the node's response schema. The node stays parked, so the same
-// question can be asked again.
+// IsRejectedReply 判断错误是否表示传给 Reply 的回答不符合节点的响应 schema。
+// 此时节点仍处于 parked 状态，同一个问题可以再问一次。
 func IsRejectedReply(err error) bool {
 	return errors.Is(err, workflow.ErrInvalidResumeResponse)
 }

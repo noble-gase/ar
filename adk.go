@@ -9,12 +9,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// NewLLMAgent returns a LLM agent.
+// NewLLMAgent 返回一个 LLM agent。
 func NewLLMAgent(builder llmchat.AgentBuilder) (agent.Agent, error) {
 	return builder.Build(nil)
 }
 
-// NewLLMChat returns a LLM chat.
+// NewLLMChat 返回一个 LLM chat。
 func NewLLMChat(name string, db gorm.Dialector, builder llmchat.AgentBuilder) (*llmchat.Chat, error) {
 	// Agent
 	agent, err := builder.Build(nil)
@@ -36,15 +36,15 @@ type DingTalkAssistant struct {
 	bot *dingtalk.Bot
 }
 
-func (dta *DingTalkAssistant) Start() {
-	dta.bot.Start()
+func (dta *DingTalkAssistant) Start() error {
+	return dta.bot.Start()
 }
 
 func (dta *DingTalkAssistant) Stop() {
 	dta.bot.Stop()
 }
 
-// NewDingTalkAssistant returns a DingTalk assistant.
+// NewDingTalkAssistant 返回一个钉钉助手。
 func NewDingTalkAssistant(cfg *dingtalk.Config, uc redis.UniversalClient, chat *llmchat.Chat) (*DingTalkAssistant, error) {
 	card, err := dingtalk.NewCardSender(cfg, uc)
 	if err != nil {

@@ -30,9 +30,9 @@ type CardSender struct {
 	clientSecret string
 	templateId   string
 
-	// confirmTemplateId is the template used for Human-in-the-Loop confirmation
-	// cards. It should expose two buttons that call back with a "decision"
-	// param ("approve"/"reject") or action ids ("confirm_approve"/"confirm_reject").
+	// confirmTemplateId 是人工确认卡片使用的模板。它应当有两个按钮，回调时通过
+	// "decision" 参数（"approve"/"reject"）或 action id
+	// （"confirm_approve"/"confirm_reject"）上报决定。
 	confirmTemplateId string
 
 	lockKey  string
@@ -51,8 +51,7 @@ type CardSender struct {
 	closeOnce sync.Once
 }
 
-// Close stops the background access-token refresh goroutine. Safe to call
-// multiple times.
+// Close 停止后台刷新 access token 的 goroutine，可以安全地重复调用。
 func (s *CardSender) Close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
@@ -60,8 +59,8 @@ func (s *CardSender) Close() {
 	})
 }
 
-// deliver creates and delivers a card and returns its outTrackId. spaceType is
-// either "IM_ROBOT" (single chat) or "IM_GROUP" (group chat, groupConvId set).
+// deliver 创建并投放一张卡片，返回它的 outTrackId。spaceType 取 "IM_ROBOT"
+// （单聊）或 "IM_GROUP"（群聊，需设置 groupConvId）。
 func (s *CardSender) deliver(ctx context.Context, outTrackId, templateId, spaceType, userId, groupConvId string, params map[string]string) (string, error) {
 	accessToken, err := s.loadAccessToken(ctx)
 	if err != nil {
@@ -92,7 +91,7 @@ func (s *CardSender) deliver(ctx context.Context, outTrackId, templateId, spaceT
 		}
 		req.ImGroupOpenSpaceModel = &dingcard.CreateAndDeliverRequestImGroupOpenSpaceModel{SupportForward: new(true)}
 		req.OpenSpaceId = new(fmt.Sprintf("dtv1.card//im_group.%s", groupConvId))
-	default: // IM_ROBOT
+	default: // 单聊 IM_ROBOT
 		req.ImRobotOpenDeliverModel = &dingcard.CreateAndDeliverRequestImRobotOpenDeliverModel{
 			SpaceType: new("IM_ROBOT"),
 			RobotCode: new(s.clientId),

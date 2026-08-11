@@ -22,36 +22,36 @@ import (
 
 var ErrNoChoicesInResponse = errors.New("no choices in OpenAI response")
 
-// OpenAI enforces a 40-character limit on tool_call_id fields.
+// OpenAI 对 tool_call_id 字段有 40 字符的长度限制。
 const maxToolCallIdLength = 40
 
-// openaiModel implements model.LLM using the official OpenAI Go SDK.
-// Works with OpenAI API and compatible providers (Ollama, vLLM, etc.).
+// openaiModel 用官方 OpenAI Go SDK 实现 model.LLM。
+// 同时适用于 OpenAI API 及其兼容实现（Ollama、vLLM 等）。
 type openaiModel struct {
 	client *openai.Client
 	name   string
 }
 
-// HTTPOptions holds optional HTTP-level configuration for the OpenAI client.
+// HTTPOptions 是 OpenAI 客户端的可选 HTTP 层配置。
 type HTTPOptions struct {
 	Client  *http.Client
 	Headers http.Header
 }
 
-// Config holds the configuration for creating an OpenAI Model.
+// Config 是创建 OpenAI Model 所需的配置。
 type Config struct {
-	// APIKey for authentication. Falls back to OPENAI_API_KEY env var if empty.
+	// APIKey 用于鉴权。留空则回退到环境变量 OPENAI_API_KEY。
 	APIKey string
-	// BaseURL for the API endpoint. Use for OpenAI-compatible providers.
-	// Example: "http://localhost:11434/v1" for Ollama.
+	// BaseURL 是 API 地址，用于对接 OpenAI 兼容的服务。
+	// 例如 Ollama 为 "http://localhost:11434/v1"。
 	BaseURL string
-	// ModelName specifies which model to use (e.g., "gpt-4o", "qwen3:8b").
+	// ModelName 指定使用的模型（如 "gpt-4o"、"qwen3:8b"）。
 	ModelName string
-	// HTTPOptions holds optional HTTP-level overrides (e.g. extra headers).
+	// HTTPOptions 是可选的 HTTP 层覆盖配置（如附加请求头）。
 	HTTPOptions HTTPOptions
 }
 
-// NewModel returns [model.LLM], backed by the OpenAI API.
+// NewModel 返回基于 OpenAI API 的 [model.LLM]。
 func NewModel(cfg Config) model.LLM {
 	var opts []option.RequestOption
 
@@ -78,13 +78,13 @@ func NewModel(cfg Config) model.LLM {
 	}
 }
 
-// Name returns the model name.
+// Name 返回模型名称。
 func (m *openaiModel) Name() string {
 	return m.name
 }
 
-// GenerateContent sends a request to the LLM and returns responses.
-// Set stream=true for streaming responses, false for a single response.
+// GenerateContent 向 LLM 发起请求并返回响应。
+// stream 为 true 时流式返回，为 false 时只返回一个完整响应。
 func (m *openaiModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	if stream {
 		return m.generateStream(ctx, req)
@@ -92,7 +92,7 @@ func (m *openaiModel) GenerateContent(ctx context.Context, req *model.LLMRequest
 	return m.generate(ctx, req)
 }
 
-// generate sends a non-streaming request and yields a single response.
+// generate 发起非流式请求，只产出一个响应。
 func (m *openaiModel) generate(ctx context.Context, req *model.LLMRequest) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		params, err := m.buildChatCompletionParams(req, false)
@@ -117,8 +117,8 @@ func (m *openaiModel) generate(ctx context.Context, req *model.LLMRequest) iter.
 	}
 }
 
-// generateStream sends a streaming request and yields partial responses
-// as they arrive, followed by a final aggregated response.
+// generateStream 发起流式请求，边到达边产出增量响应，
+// 最后再产出一个聚合后的完整响应。
 func (m *openaiModel) generateStream(ctx context.Context, req *model.LLMRequest) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		params, err := m.buildChatCompletionParams(req, true)
@@ -132,7 +132,7 @@ func (m *openaiModel) generateStream(ctx context.Context, req *model.LLMRequest)
 
 		acc := openai.ChatCompletionAccumulator{}
 
-		// Yield partial responses as chunks arrive
+		// 分片到达即产出
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
@@ -142,22 +142,20 @@ func (m *openaiModel) generateStream(ctx context.Context, req *model.LLMRequest)
 			}
 
 			delta := chunk.Choices[0].Delta
-			// reasoning_content is a non-standard field used by OpenAI-compatible
-			// providers (Kimi K2.6, DeepSeek-R1, Qwen3-Thinking, etc.) to stream
-			// hidden chain-of-thought tokens. The official OpenAI schema does not
-			// include it, so it is read from the raw JSON envelope rather than a
-			// typed field on Delta. See extractReasoningContent for details.
+			// reasoning_content 是 OpenAI 兼容服务（Kimi K2.6、DeepSeek-R1、
+			// Qwen3-Thinking 等）用来流式输出隐藏思维链的非标准字段。官方
+			// OpenAI schema 里没有它，所以只能从原始 JSON 信封里读，而不是
+			// 从 Delta 的类型化字段读。细节见 extractReasoningContent。
 			reasoning := extractReasoningContent(delta.RawJSON())
 
 			if delta.Content == "" && reasoning == "" {
 				continue
 			}
 
-			// Order is significant: reasoning tokens are emitted before the
-			// final answer tokens, so the Part order mirrors the temporal
-			// order in which the model produced them. Downstream consumers
-			// (e.g. ADK's llmagent) iterate parts and filter on Thought, so
-			// having reasoning first matches the natural transcript order.
+			// 顺序有意义：推理 token 先于最终答案 token 产生，所以 Part 的
+			// 顺序要镜像模型产出它们的时间顺序。下游消费者（如 ADK 的
+			// llmagent）会遍历 parts 并按 Thought 过滤，把推理放在前面正好
+			// 符合自然的对话记录顺序。
 			var parts []*genai.Part
 			if reasoning != "" {
 				parts = append(parts, &genai.Part{Text: reasoning, Thought: true})
@@ -184,12 +182,12 @@ func (m *openaiModel) generateStream(ctx context.Context, req *model.LLMRequest)
 			return
 		}
 
-		// Build and yield final aggregated response
+		// 构造并产出最终的聚合响应
 		yield(m.buildStreamFinalResponse(&acc), nil)
 	}
 }
 
-// buildStreamFinalResponse creates the final LLMResponse from accumulated stream data.
+// buildStreamFinalResponse 用流式累积的数据构造最终的 LLMResponse。
 func (m *openaiModel) buildStreamFinalResponse(acc *openai.ChatCompletionAccumulator) *model.LLMResponse {
 	content := &genai.Content{
 		Role:  genai.RoleModel,
@@ -199,10 +197,9 @@ func (m *openaiModel) buildStreamFinalResponse(acc *openai.ChatCompletionAccumul
 	if len(acc.Choices) > 0 {
 		choice := acc.Choices[0]
 
-		// Same rationale as in generateStream: read reasoning_content from the
-		// raw JSON since openai-go does not type the non-standard field.
-		// Reasoning Part goes before the final-answer Part to preserve the
-		// temporal order in which the model produced the tokens.
+		// 与 generateStream 中同理：openai-go 没有为这个非标准字段定型，
+		// 只能从原始 JSON 读 reasoning_content。推理 Part 放在最终答案
+		// Part 之前，以保留模型产出 token 的时间顺序。
 		if reasoning := extractReasoningContent(choice.Message.RawJSON()); reasoning != "" {
 			content.Parts = append(content.Parts, &genai.Part{Text: reasoning, Thought: true})
 		}
@@ -236,18 +233,18 @@ func (m *openaiModel) buildStreamFinalResponse(acc *openai.ChatCompletionAccumul
 	}
 }
 
-// buildChatCompletionParams converts an LLMRequest into OpenAI API parameters.
+// buildChatCompletionParams 把 LLMRequest 转换成 OpenAI 的 API 参数。
 func (m *openaiModel) buildChatCompletionParams(req *model.LLMRequest, stream bool) (openai.ChatCompletionNewParams, error) {
 	var messages []openai.ChatCompletionMessageParamUnion
 
-	// Add system instruction
+	// 加入系统指令
 	if req.Config != nil && req.Config.SystemInstruction != nil {
 		if text := extractText(req.Config.SystemInstruction); text != "" {
 			messages = append(messages, openai.SystemMessage(text))
 		}
 	}
 
-	// Convert conversation messages
+	// 转换对话消息
 	for _, content := range req.Contents {
 		msgs, err := m.convertContentToMessages(content)
 		if err != nil {
@@ -266,7 +263,7 @@ func (m *openaiModel) buildChatCompletionParams(req *model.LLMRequest, stream bo
 		}
 	}
 
-	// Apply optional configuration
+	// 应用可选配置
 	if req.Config != nil {
 		m.applyGenerationConfig(&params, req.Config)
 	}
@@ -274,7 +271,7 @@ func (m *openaiModel) buildChatCompletionParams(req *model.LLMRequest, stream bo
 	return params, nil
 }
 
-// applyGenerationConfig applies optional generation settings to the request params.
+// applyGenerationConfig 把可选的生成参数应用到请求上。
 func (m *openaiModel) applyGenerationConfig(params *openai.ChatCompletionNewParams, cfg *genai.GenerateContentConfig) {
 	if cfg.Temperature != nil {
 		params.Temperature = openai.Float(float64(*cfg.Temperature))
@@ -286,7 +283,7 @@ func (m *openaiModel) applyGenerationConfig(params *openai.ChatCompletionNewPara
 		params.TopP = openai.Float(float64(*cfg.TopP))
 	}
 
-	// Stop sequences
+	// 停止序列
 	if len(cfg.StopSequences) == 1 {
 		params.Stop = openai.ChatCompletionNewParamsStopUnion{
 			OfString: openai.String(cfg.StopSequences[0]),
@@ -297,19 +294,19 @@ func (m *openaiModel) applyGenerationConfig(params *openai.ChatCompletionNewPara
 		}
 	}
 
-	// Reasoning effort (for o-series models)
+	// 推理强度（o 系列模型）
 	if cfg.ThinkingConfig != nil {
 		params.ReasoningEffort = convertThinkingLevel(cfg.ThinkingConfig.ThinkingLevel)
 	}
 
-	// JSON mode
+	// JSON 模式
 	if cfg.ResponseMIMEType == "application/json" {
 		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONObject: &openai.ResponseFormatJSONObjectParam{},
 		}
 	}
 
-	// Structured output with schema
+	// 带 schema 的结构化输出
 	if cfg.ResponseSchema != nil {
 		if schemaMap, err := convertSchema(cfg.ResponseSchema); err == nil {
 			params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
@@ -325,7 +322,7 @@ func (m *openaiModel) applyGenerationConfig(params *openai.ChatCompletionNewPara
 		}
 	}
 
-	// Tools
+	// 工具
 	if len(cfg.Tools) > 0 {
 		if tools, err := m.convertTools(cfg.Tools); err == nil {
 			params.Tools = tools
@@ -334,17 +331,16 @@ func (m *openaiModel) applyGenerationConfig(params *openai.ChatCompletionNewPara
 
 	// ToolConfig → tool_choice
 	//
-	// Maps genai.FunctionCallingConfig.Mode to OpenAI's tool_choice:
-	//   ModeAuto → "auto"   (default behaviour; model may or may not call a tool)
-	//   ModeAny  → "required" (model MUST call a tool; use for agentic loops
-	//                         that can't handle a plain-text reply)
-	//   ModeNone → "none"   (tools disabled for this call even if provided)
+	// 把 genai.FunctionCallingConfig.Mode 映射到 OpenAI 的 tool_choice：
+	//   ModeAuto → "auto"     （默认行为，模型可调可不调工具）
+	//   ModeAny  → "required" （模型必须调工具，用于无法处理纯文本回复的
+	//                          agent 循环）
+	//   ModeNone → "none"     （本次调用禁用工具，即使传了工具定义）
 	//
-	// When AllowedFunctionNames is set with ModeAny, OpenAI's equivalent is a
-	// named function choice — we pick the first name since OpenAI's
-	// tool_choice accepts only one specific function, not a list. Callers who
-	// need a multi-function allowlist should rely on ModeAny plus prompt-level
-	// instructions to pick within the allowed set.
+	// ModeAny 同时设置了 AllowedFunctionNames 时，OpenAI 的对应物是「指定
+	// 某个函数」——这里取第一个名字，因为 OpenAI 的 tool_choice 只接受单个
+	// 函数而不是列表。需要多函数白名单的调用方，应当用 ModeAny 加提示词
+	// 来约束模型在允许的集合内选择。
 	if cfg.ToolConfig != nil && cfg.ToolConfig.FunctionCallingConfig != nil {
 		fcc := cfg.ToolConfig.FunctionCallingConfig
 		switch fcc.Mode {
@@ -372,8 +368,8 @@ func (m *openaiModel) applyGenerationConfig(params *openai.ChatCompletionNewPara
 	}
 }
 
-// convertContentToMessages converts a genai.Content into OpenAI message format.
-// Handles text, images, audio, files, function calls, and function responses.
+// convertContentToMessages 把 genai.Content 转换成 OpenAI 的消息格式。
+// 支持文本、图片、音频、文件、函数调用与函数响应。
 func (m *openaiModel) convertContentToMessages(content *genai.Content) ([]openai.ChatCompletionMessageParamUnion, error) {
 	var messages []openai.ChatCompletionMessageParamUnion
 
@@ -427,7 +423,7 @@ func (m *openaiModel) convertContentToMessages(content *genai.Content) ([]openai
 	return messages, nil
 }
 
-// buildRoleMessage creates the appropriate message type based on role.
+// buildRoleMessage 按 role 构造对应类型的消息。
 func (m *openaiModel) buildRoleMessage(role string, texts []string, media []openai.ChatCompletionContentPartUnionParam, toolCalls []openai.ChatCompletionMessageToolCallUnionParam) *openai.ChatCompletionMessageParamUnion {
 	switch convertRole(role) {
 	case "user":
@@ -441,7 +437,7 @@ func (m *openaiModel) buildRoleMessage(role string, texts []string, media []open
 	return nil
 }
 
-// buildUserMessage creates a user message, with multi-part support for media.
+// buildUserMessage 构造用户消息，支持多媒体的多 part 形式。
 func buildUserMessage(texts []string, media []openai.ChatCompletionContentPartUnionParam) *openai.ChatCompletionMessageParamUnion {
 	if len(media) == 0 {
 		msg := openai.UserMessage(joinTexts(texts))
@@ -465,7 +461,7 @@ func buildUserMessage(texts []string, media []openai.ChatCompletionContentPartUn
 	}
 }
 
-// buildAssistantMessage creates an assistant message with optional tool calls.
+// buildAssistantMessage 构造助手消息，可带工具调用。
 func buildAssistantMessage(texts []string, toolCalls []openai.ChatCompletionMessageToolCallUnionParam) *openai.ChatCompletionMessageParamUnion {
 	msg := openai.ChatCompletionAssistantMessageParam{}
 
@@ -481,7 +477,7 @@ func buildAssistantMessage(texts []string, toolCalls []openai.ChatCompletionMess
 	return &openai.ChatCompletionMessageParamUnion{OfAssistant: &msg}
 }
 
-// convertResponse transforms an OpenAI response into an LLMResponse.
+// convertResponse 把 OpenAI 的响应转换成 LLMResponse。
 func (m *openaiModel) convertResponse(resp *openai.ChatCompletion) (*model.LLMResponse, error) {
 	if len(resp.Choices) == 0 {
 		return nil, ErrNoChoicesInResponse
@@ -493,9 +489,9 @@ func (m *openaiModel) convertResponse(resp *openai.ChatCompletion) (*model.LLMRe
 		Parts: []*genai.Part{},
 	}
 
-	// Same rationale as in buildStreamFinalResponse: read reasoning_content
-	// from the raw JSON since openai-go does not type the non-standard field
-	// used by OpenAI-compatible reasoning providers.
+	// 与 buildStreamFinalResponse 中同理：openai-go 没有为 OpenAI 兼容的
+	// 推理服务所用的这个非标准字段定型，只能从原始 JSON 读
+	// reasoning_content。
 	if reasoning := extractReasoningContent(choice.Message.RawJSON()); reasoning != "" {
 		content.Parts = append(content.Parts, &genai.Part{Text: reasoning, Thought: true})
 	}
@@ -522,7 +518,7 @@ func (m *openaiModel) convertResponse(resp *openai.ChatCompletion) (*model.LLMRe
 	}, nil
 }
 
-// convertTools transforms genai tools into OpenAI function tool format.
+// convertTools 把 genai 的工具定义转换成 OpenAI 的函数工具格式。
 func (m *openaiModel) convertTools(genaiTools []*genai.Tool) ([]openai.ChatCompletionToolUnionParam, error) {
 	var tools []openai.ChatCompletionToolUnionParam
 
@@ -548,8 +544,8 @@ func (m *openaiModel) convertTools(genaiTools []*genai.Tool) ([]openai.ChatCompl
 	return tools, nil
 }
 
-// convertToFunctionParams converts various parameter types to OpenAI format.
-// OpenAI requires object schemas to have a "properties" field, even if empty.
+// convertToFunctionParams 把各种参数类型转换成 OpenAI 的格式。
+// OpenAI 要求 object 类型的 schema 必须有 "properties" 字段，哪怕是空的。
 func convertToFunctionParams(params any) shared.FunctionParameters {
 	if params == nil {
 		return nil
@@ -557,11 +553,11 @@ func convertToFunctionParams(params any) shared.FunctionParameters {
 
 	var m map[string]any
 
-	// Direct map
+	// 直接就是 map
 	if dm, ok := params.(map[string]any); ok {
 		m = dm
 	} else {
-		// Convert via JSON for other types (e.g., *jsonschema.Schema)
+		// 其他类型（如 *jsonschema.Schema）走 JSON 转换
 		jsonBytes, err := json.Marshal(params)
 		if err != nil {
 			return nil
@@ -571,28 +567,28 @@ func convertToFunctionParams(params any) shared.FunctionParameters {
 		}
 	}
 
-	// Standardise types to lowercase for JSON schema compliance
+	// 类型统一转小写，符合 JSON schema 规范
 	lowercaseTypes(m)
-	// OpenAI requires "properties" for object types
+	// OpenAI 要求 object 类型必须有 "properties"
 	ensureObjectProperties(m)
 
 	return shared.FunctionParameters(m)
 }
 
-// ensureObjectProperties recursively ensures all object schemas have a properties field.
+// ensureObjectProperties 递归确保所有 object schema 都有 properties 字段。
 func ensureObjectProperties(schema map[string]any) {
 	if schema == nil {
 		return
 	}
 
-	// If type is "object" and no properties, add empty properties
+	// type 为 "object" 且没有 properties 时补一个空的
 	if t, ok := schema["type"].(string); ok && t == "object" {
 		if _, hasProps := schema["properties"]; !hasProps {
 			schema["properties"] = map[string]any{}
 		}
 	}
 
-	// Recursively process nested properties
+	// 递归处理嵌套的 properties
 	if props, ok := schema["properties"].(map[string]any); ok {
 		for _, prop := range props {
 			if propMap, ok := prop.(map[string]any); ok {
@@ -601,14 +597,14 @@ func ensureObjectProperties(schema map[string]any) {
 		}
 	}
 
-	// Process array items
+	// 处理数组元素
 	if items, ok := schema["items"].(map[string]any); ok {
 		ensureObjectProperties(items)
 	}
 }
 
-// lowercaseTypes recursively traverses a JSON schema map and lowercases all "type" fields
-// to comply with standard JSON schema validation.
+// lowercaseTypes 递归遍历 JSON schema map，把所有 "type" 字段转成小写，
+// 以符合标准 JSON schema 的校验要求。
 func lowercaseTypes(m map[string]any) {
 	for k, v := range m {
 		if k == "type" {
@@ -627,7 +623,7 @@ func lowercaseTypes(m map[string]any) {
 	}
 }
 
-// convertSchema recursively converts a genai.Schema to OpenAI JSON schema format.
+// convertSchema 递归把 genai.Schema 转换成 OpenAI 的 JSON schema 格式。
 func convertSchema(schema *genai.Schema) (map[string]any, error) {
 	if schema == nil {
 		return map[string]any{"type": "object", "properties": map[string]any{}}, nil
@@ -671,8 +667,8 @@ func convertSchema(schema *genai.Schema) (map[string]any, error) {
 	return result, nil
 }
 
-// normalizeToolCallId shortens IDs exceeding OpenAI's 40-char limit using a hash.
-// The mapping is stored to allow reverse lookup if needed.
+// normalizeToolCallId 用哈希把超过 OpenAI 40 字符上限的 ID 缩短，
+// 映射会被保存下来以便需要时反查。
 func (m *openaiModel) normalizeToolCallId(id string) string {
 	if len(id) <= maxToolCallIdLength {
 		return id
@@ -683,12 +679,12 @@ func (m *openaiModel) normalizeToolCallId(id string) string {
 	return shortId
 }
 
-// --- Helper functions ---
+// --- 辅助函数 ---
 
-// convertInlineDataToPart converts inline data to the appropriate OpenAI content part.
-// Supports images (as data URI), audio (wav, mp3), and generic files (PDF, etc.).
-// Returns an error for unsupported MIME types, matching Gemini's behavior of letting
-// the request fail rather than silently dropping content.
+// convertInlineDataToPart 把内联数据转换成对应的 OpenAI 内容 part。
+// 支持图片（data URI）、音频（wav、mp3）和通用文件（PDF 等）。
+// 遇到不支持的 MIME 类型返回错误，与 Gemini 的行为一致：让请求失败，
+// 而不是悄悄丢掉内容。
 func convertInlineDataToPart(data *genai.Blob) (*openai.ChatCompletionContentPartUnionParam, error) {
 	if data == nil {
 		return nil, fmt.Errorf("inline data is nil")
@@ -738,16 +734,14 @@ func convertInlineDataToPart(data *genai.Blob) (*openai.ChatCompletionContentPar
 	}
 }
 
-// convertUsageMetadata converts OpenAI usage stats to genai format.
+// convertUsageMetadata 把 OpenAI 的用量统计转换成 genai 格式。
 //
-// CompletionTokensDetails.ReasoningTokens is the count of hidden reasoning
-// tokens billed as output tokens by OpenAI reasoning models (o-series,
-// gpt-5.x) and by OpenAI-compatible providers exposing reasoning (DeepSeek,
-// Kimi K2/K2.6, Qwen3-Thinking). It is a documented part of the official
-// Chat Completions schema, so we always map it to genai's ThoughtsTokenCount
-// regardless of whether the provider also returns reasoning text. When the
-// provider does not emit reasoning tokens the field is zero, and genai
-// serialisation omits it via `omitempty`.
+// CompletionTokensDetails.ReasoningTokens 是隐藏推理 token 的数量，
+// OpenAI 的推理模型（o 系列、gpt-5.x）以及暴露推理过程的兼容服务
+// （DeepSeek、Kimi K2/K2.6、Qwen3-Thinking）都按输出 token 计费。
+// 它是官方 Chat Completions schema 的一部分，所以总是映射到 genai 的
+// ThoughtsTokenCount，无论服务端是否同时返回推理文本。服务端不产生推理
+// token 时该字段为零，genai 序列化会因 `omitempty` 省略它。
 func convertUsageMetadata(usage openai.CompletionUsage) *genai.GenerateContentResponseUsageMetadata {
 	if usage.TotalTokens == 0 {
 		return nil
@@ -760,25 +754,21 @@ func convertUsageMetadata(usage openai.CompletionUsage) *genai.GenerateContentRe
 	}
 }
 
-// extractReasoningContent reads the non-standard "reasoning_content" field
-// from the SDK's raw JSON envelope.
+// extractReasoningContent 从 SDK 的原始 JSON 信封里读取非标准的
+// "reasoning_content" 字段。
 //
-// The OpenAI Chat Completions schema does NOT include a "reasoning_content"
-// field — for OpenAI's own reasoning models (o-series, gpt-5.x) the reasoning
-// text is hidden and only the token count is reported (via
-// CompletionTokensDetails.ReasoningTokens). Reasoning *text* is only
-// available through the Responses API, which this adapter does not use.
+// OpenAI 的 Chat Completions schema **没有** "reasoning_content" 字段——对
+// OpenAI 自家的推理模型（o 系列、gpt-5.x）来说，推理文本是隐藏的，只上报
+// token 数量（通过 CompletionTokensDetails.ReasoningTokens）。推理**文本**
+// 只能通过 Responses API 拿到，而本适配器不用那个 API。
 //
-// However, multiple OpenAI-compatible providers (DeepSeek-R1, Kimi K2/K2.6,
-// Qwen3-Thinking, etc.) extend the response with a "reasoning_content"
-// field on choices[].message and choices[].delta. openai-go does not type
-// this field but preserves it in JSON.raw, which is reachable via the
-// generated RawJSON() accessor. Parsing the raw envelope is the documented
-// way to read non-standard fields in this SDK.
+// 但不少 OpenAI 兼容服务（DeepSeek-R1、Kimi K2/K2.6、Qwen3-Thinking 等）会在
+// choices[].message 和 choices[].delta 上扩展出 "reasoning_content" 字段。
+// openai-go 没有为它定型，但会原样保留在 JSON.raw 里，可以通过生成的
+// RawJSON() 访问。解析原始信封正是这个 SDK 读取非标准字段的官方做法。
 //
-// Returns "" if the field is absent, empty, or the JSON cannot be parsed —
-// callers should treat empty as "no reasoning content emitted" and skip
-// adding a thought Part.
+// 字段缺失、为空或 JSON 无法解析时返回 ""——调用方应当把空值当作「没有产出
+// 推理内容」，跳过添加 thought Part。
 func extractReasoningContent(rawJSON string) string {
 	if rawJSON == "" {
 		return ""
@@ -792,15 +782,15 @@ func extractReasoningContent(rawJSON string) string {
 	return probe.ReasoningContent
 }
 
-// convertRole maps genai roles to OpenAI roles.
+// convertRole 把 genai 的 role 映射到 OpenAI 的 role。
 func convertRole(role string) string {
 	if role == "model" {
 		return "assistant"
 	}
-	return role // "user" and "system" are the same
+	return role // "user" 和 "system" 两边一致
 }
 
-// convertFinishReason maps OpenAI finish reasons to genai format.
+// convertFinishReason 把 OpenAI 的结束原因映射成 genai 格式。
 func convertFinishReason(reason string) genai.FinishReason {
 	switch reason {
 	case "stop", "tool_calls", "function_call":
@@ -814,7 +804,7 @@ func convertFinishReason(reason string) genai.FinishReason {
 	}
 }
 
-// convertThinkingLevel maps genai thinking levels to OpenAI reasoning effort.
+// convertThinkingLevel 把 genai 的思考档位映射成 OpenAI 的 reasoning effort。
 func convertThinkingLevel(level genai.ThinkingLevel) shared.ReasoningEffort {
 	switch level {
 	case genai.ThinkingLevelLow:
@@ -826,7 +816,7 @@ func convertThinkingLevel(level genai.ThinkingLevel) shared.ReasoningEffort {
 	}
 }
 
-// schemaTypeToString converts genai.Type to JSON schema type string.
+// schemaTypeToString 把 genai.Type 转换成 JSON schema 的类型字符串。
 func schemaTypeToString(t genai.Type) string {
 	types := map[genai.Type]string{
 		genai.TypeString:  "string",
@@ -842,7 +832,7 @@ func schemaTypeToString(t genai.Type) string {
 	return "string"
 }
 
-// extractText extracts all text parts from a Content and joins them.
+// extractText 取出 Content 里的所有文本 part 并拼接。
 func extractText(content *genai.Content) string {
 	if content == nil {
 		return ""
@@ -856,12 +846,12 @@ func extractText(content *genai.Content) string {
 	return joinTexts(texts)
 }
 
-// joinTexts joins multiple text strings with newlines.
+// joinTexts 用换行拼接多段文本。
 func joinTexts(texts []string) string {
 	return strings.Join(texts, "\n")
 }
 
-// parseJSONArgs parses a JSON string into a map. Returns empty map on error.
+// parseJSONArgs 把 JSON 字符串解析成 map，出错时返回空 map。
 func parseJSONArgs(argsJSON string) map[string]any {
 	if argsJSON == "" {
 		return make(map[string]any)

@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// nil/empty payloads must encode to "{}", real ones pass through, marshal
-// errors propagate.
+// nil/空 载荷必须编码成 "{}"，真实载荷原样透传，序列化错误要往上传。
 func TestMarshalToolPayload(t *testing.T) {
 	cases := []struct {
 		name    string

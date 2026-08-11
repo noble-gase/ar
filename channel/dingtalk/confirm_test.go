@@ -39,7 +39,6 @@ func confirmBot(t *testing.T) (*Bot, *fakeCard, *fakeChat) {
 		CallId:    "call-1",
 		UserId:    "u1",
 		SessionId: "s-today",
-		Prompt:    "即将执行 danger_tool",
 	})
 	return b, cardStore, chat
 }
@@ -161,8 +160,9 @@ func TestConfirmWithoutCardConfigIsIgnored(t *testing.T) {
 	}
 }
 
-// 非确认卡片的回调（或已处理过的）静默忽略，不能报错让钉钉重试。
-func TestConfirmUnknownCardIsIgnored(t *testing.T) {
+// 确认结束后迟到的重复回调：卡片上写的已经是这次确认的结果（「✅ 已同意」），
+// 同步响应绝不能把它改写掉。
+func TestLateClickDoesNotOverwriteFinalCard(t *testing.T) {
 	b, _, _ := confirmBot(t)
 
 	resp, err := b.confirmCardHandler(context.Background(), cardRequest("other-track", "u1", map[string]any{"action": "approve"}))
@@ -172,11 +172,30 @@ func TestConfirmUnknownCardIsIgnored(t *testing.T) {
 	if resp == nil {
 		t.Fatal("confirmCardHandler() response = nil, want an empty response")
 	}
+	if resp.CardData != nil {
+		t.Errorf("card data = %v, want no card update for an already settled confirmation", resp.CardData)
+	}
 }
 
-// 恢复过程中又触发一次确认时，子确认卡建立失败必须向上报失败：
-// 否则父确认被当成已完成，而新的确认入口其实并不存在。
-func TestChildConfirmFailurePropagates(t *testing.T) {
+// 锁内读不到记录说明这次确认已在别处收尾（上一次点击写了终态，或取消流程写了
+// 「已随对话取消」），此时绝不能再写任何文案覆盖它。
+func TestResumeMissingPendingLeavesCardUntouched(t *testing.T) {
+	cardStore, chat := newFakeCard(), &fakeChat{}
+	b := newTestBot(cardStore, chat)
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "missing-track", true)
+
+	if got := cardStore.lastCard(); got != "" {
+		t.Errorf("card = %q, want no update: the final text was written elsewhere", got)
+	}
+	if cardStore.answerCards != 0 {
+		t.Errorf("answerCards = %d, want no answer card for a missing confirmation", cardStore.answerCards)
+	}
+}
+
+// 恢复过程中又触发一次确认、而子确认卡建不起来时：ADK 里已经产生了一个没有任何
+// 卡片能回答的确认，必须自动拒绝掉，同时父记录要作废（事件流已消费，不能重放）。
+func TestChildConfirmFailureAutoRejects(t *testing.T) {
 	b, cardStore, chat := confirmBot(t)
 
 	confirmEvent := &adk_session.Event{}
@@ -263,6 +282,36 @@ func TestAlreadyConfirmedIsNotReExecuted(t *testing.T) {
 	}
 	if strings.Contains(cardStore.lastCard(), "请重新点击") {
 		t.Errorf("card = %q, want no retry invitation for an already answered confirmation", cardStore.lastCard())
+	}
+}
+
+func TestMissingConfirmationAfterSameDayResetExpiresCard(t *testing.T) {
+	b, cardStore, chat := confirmBot(t)
+	chat.confirmErr = llmchat.ErrConfirmationNotFound
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
+
+	if cardStore.pendingCount() != 0 {
+		t.Errorf("pendingCount = %d, want the stale record removed", cardStore.pendingCount())
+	}
+	if !strings.Contains(cardStore.lastCard(), "已失效") {
+		t.Errorf("card = %q, want the stale confirmation explained", cardStore.lastCard())
+	}
+}
+
+// 回答卡还没建起来就 panic：此时只有确认卡需要收尾，但它必须被收尾，
+// 否则会永远停在「处理中」。
+func TestPanicBeforeAnswerCardSettlesConfirmCard(t *testing.T) {
+	b, cardStore, _ := confirmBot(t)
+	cardStore.panicOnDeliver = true
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
+
+	if !strings.Contains(cardStore.lastCard(), "请重新点击") {
+		t.Errorf("card = %q, want the confirmation card settled after an early panic", cardStore.lastCard())
+	}
+	if cardStore.pendingCount() != 1 {
+		t.Errorf("pendingCount = %d, want the record kept so the user can retry", cardStore.pendingCount())
 	}
 }
 
@@ -362,9 +411,7 @@ func TestRetryOnOriginalCardWhenLockUnavailable(t *testing.T) {
 
 // 同步响应只把文案改成「处理中」：此刻后台还没开始恢复，不能显示成已完成。
 func TestSyncResponseShowsProcessing(t *testing.T) {
-	b, _, _ := confirmBot(t)
-
-	resp := b.confirmResponse(true)
+	resp := confirmStatusResponse(processingText(true))
 	content := resp.CardData.CardParamMap["content"]
 	if !strings.Contains(content, "正在执行") {
 		t.Errorf("content = %q, want a processing state", content)
@@ -414,6 +461,14 @@ func TestConfirmDoubleClickDeliversOneAnswerCard(t *testing.T) {
 	case got := <-chat.confirmed:
 		t.Fatalf("Confirm ran twice: %+v", got)
 	case <-time.After(50 * time.Millisecond):
+	}
+
+	// 后到的点击读不到记录时必须静默退出，不能用「已失效」覆盖决定文案
+	if !b.drain(2 * time.Second) {
+		t.Fatal("in-flight resumes did not finish")
+	}
+	if !strings.Contains(cardStore.lastCard(), "已同意") {
+		t.Errorf("card = %q, want the decision text preserved after late clicks", cardStore.lastCard())
 	}
 }
 

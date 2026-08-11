@@ -27,54 +27,48 @@ type ModelCallback struct {
 	Error  []llmagent.OnModelErrorCallback
 }
 
-// NormalAgent is the general-purpose agent builder. A single NormalAgent can
-// mix all tool kinds:
-//   - Tools:      function tools (FuncTool)
-//   - Skills:     skill toolsets loaded from directories
-//   - MCPServers: MCP servers (Streamable HTTP)
-//   - AgentTools: other agents exposed as tools (agent-as-tool)
+// NormalAgent 是通用的 agent 构造器。一个 NormalAgent 可以混用所有工具类型：
+//   - Tools:      函数工具（FuncTool）
+//   - Skills:     从目录加载的技能工具集
+//   - MCPServers: MCP 服务（Streamable HTTP）
+//   - AgentTools: 以工具形式暴露的其它 agent（agent-as-tool）
 //
-// Each source carries its own Human-in-the-Loop confirmation policy. Fields are
-// optional; leave a slice empty to omit that tool kind. It can serve as the root
-// agent, a workflow SubAgent, or (via AgentTools) a sub-agent exposed as a tool.
+// 每种来源都各自带有人工确认（HITL）策略。这些字段都是可选的，某类工具不需要
+// 就把切片留空。它可以作为根 agent、工作流的 SubAgent，或者（通过 AgentTools）
+// 作为以工具形式暴露的子 agent。
 type NormalAgent struct {
 	Name        string
 	Description string
 	Instruction string
 
-	// LLMAdapter specifies the model for agent, if not set, the root agent model will be used.
+	// LLMAdapter 指定该 agent 使用的模型，未设置时沿用根 agent 的模型。
 	LLMAdapter LLMAdapter
 
-	// Tools is the list of function tools (FuncTool), each with its own
-	// confirmation policy.
+	// Tools 是函数工具（FuncTool）列表，每个工具各自带确认策略。
 	Tools []ToolBuilder
 
-	// Skills is the list of skills directories, each with its own confirmation
-	// policy.
+	// Skills 是技能目录列表，每个各自带确认策略。
 	Skills []SkillSource
 
-	// MCPServers is the list of MCP servers (Streamable HTTP), each with its own
-	// confirmation policy.
+	// MCPServers 是 MCP 服务（Streamable HTTP）列表，每个各自带确认策略。
 	MCPServers []MCPSource
 
-	// AgentTools exposes other agents as tools (agent-as-tool), each with its own
-	// confirmation policy. Lets a single NormalAgent mix function tools, skills,
-	// MCP servers and sub-agents.
+	// AgentTools 把其它 agent 以工具形式暴露（agent-as-tool），每个各自带确认
+	// 策略。这让一个 NormalAgent 能同时混用函数工具、技能、MCP 服务和子 agent。
 	AgentTools []AgentToolSource
 
-	// SubAgents exposes child agents via LLM-driven delegation (transfer_to_agent).
-	// Unlike AgentTools (agent-as-tool), a transferred sub-agent runs in the SAME
-	// runner/session as the parent, so Human-in-the-Loop confirmation raised by the
-	// sub-agent's own tools bubbles up and can be resumed. A sub-agent's tools are
-	// only declared to the model after transfer, so it also keeps tool declarations
-	// out of the parent context until needed.
+	// SubAgents 通过 LLM 驱动的转交（transfer_to_agent）暴露子 agent。
+	// 与 AgentTools（agent-as-tool）不同，被转交的子 agent 跑在与父级**相同**的
+	// runner/session 里，因此子 agent 自己的工具发起的人工确认能冒泡上来并被恢复。
+	// 子 agent 的工具只有在转交之后才会声明给模型，所以在用到之前，这些工具声明
+	// 不会占用父级的上下文。
 	SubAgents []AgentBuilder
 
 	AgentHooks AgentCallback
 	ToolHooks  ToolCallback
 	ModelHooks ModelCallback
 
-	// OutputKey only used for workflow coordination.
+	// OutputKey 仅用于工作流编排。
 	OutputKey string
 }
 
@@ -98,7 +92,7 @@ func (na *NormalAgent) Build(llm model.LLM) (agent.Agent, error) {
 		OutputKey:             na.OutputKey,
 	}
 
-	// Tools
+	// 工具
 	for _, builder := range na.Tools {
 		tool, err := builder.Build()
 		if err != nil {
@@ -107,7 +101,7 @@ func (na *NormalAgent) Build(llm model.LLM) (agent.Agent, error) {
 		cfg.Tools = append(cfg.Tools, tool)
 	}
 
-	// Skill Toolset
+	// 技能工具集
 	for _, sk := range na.Skills {
 		toolset, err := buildSkill(ctx, sk)
 		if err != nil {
@@ -116,7 +110,7 @@ func (na *NormalAgent) Build(llm model.LLM) (agent.Agent, error) {
 		cfg.Toolsets = append(cfg.Toolsets, toolset)
 	}
 
-	// MCP Toolset (Streamable HTTP)
+	// MCP 工具集（Streamable HTTP）
 	for _, server := range na.MCPServers {
 		toolset, err := buildMCPServer(server)
 		if err != nil {
@@ -125,7 +119,7 @@ func (na *NormalAgent) Build(llm model.LLM) (agent.Agent, error) {
 		cfg.Toolsets = append(cfg.Toolsets, toolset)
 	}
 
-	// LLM Model
+	// LLM 模型
 	llm, err := resolveModel(llm, na.LLMAdapter)
 	if err != nil {
 		return nil, err

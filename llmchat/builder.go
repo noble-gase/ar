@@ -16,14 +16,14 @@ import (
 	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 )
 
-// AgentBuilder is an interface that builds an agent.
+// AgentBuilder 是构造 agent 的接口。
 type AgentBuilder interface {
 	Build(model.LLM) (agent.Agent, error)
 }
 
-// staticToolset adapts a fixed list of tools into a tool.Toolset, so helpers
-// that operate on toolsets (e.g. tool.WithConfirmation) can be applied to
-// individually constructed tools such as agent-as-tool.
+// staticToolset 把一组固定的工具适配成 tool.Toolset，这样那些作用于 toolset
+// 的辅助函数（如 tool.WithConfirmation）就能用在单独构造的工具上，比如
+// agent-as-tool。
 type staticToolset struct {
 	name  string
 	tools []tool.Tool
@@ -35,8 +35,8 @@ func (s *staticToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
 	return s.tools, nil
 }
 
-// resolveModel returns the model used for sub-agents: the adapter's model when
-// an adapter is set, otherwise the root model.
+// resolveModel 返回子 agent 使用的模型：设置了 adapter 就用 adapter 的模型，
+// 否则用根模型。
 func resolveModel(llm model.LLM, adapter LLMAdapter) (model.LLM, error) {
 	if adapter == nil {
 		return llm, nil
@@ -49,9 +49,8 @@ func resolveModel(llm model.LLM, adapter LLMAdapter) (model.LLM, error) {
 	return m, nil
 }
 
-// wrapConfirmation wraps a toolset with Human-in-the-Loop (HITL) confirmation
-// when either require is true or a provider is set. Otherwise the toolset is
-// returned unchanged.
+// wrapConfirmation 在 require 为 true 或设置了 provider 时，给 toolset 套上
+// 人工确认（HITL）。否则原样返回。
 func wrapConfirmation(ts tool.Toolset, require bool, provider tool.ConfirmationProvider) tool.Toolset {
 	if require || provider != nil {
 		return tool.WithConfirmation(ts, require, provider)
@@ -59,24 +58,20 @@ func wrapConfirmation(ts tool.Toolset, require bool, provider tool.ConfirmationP
 	return ts
 }
 
-// MCPSource configures a single MCP server (Streamable HTTP) together with its
-// own Human-in-the-Loop confirmation policy.
+// MCPSource 配置一个 MCP 服务（Streamable HTTP），以及它自己的人工确认策略。
 type MCPSource struct {
-	// Endpoint is the Streamable HTTP endpoint of the MCP server.
+	// Endpoint 是 MCP 服务的 Streamable HTTP 端点。
 	Endpoint string
 
-	// RequireConfirmation, when true, requests HITL confirmation for every tool
-	// exposed by this endpoint before execution.
+	// RequireConfirmation 为 true 时，该端点暴露的每个工具执行前都要人工确认。
 	RequireConfirmation bool
 
-	// ConfirmationProvider dynamically decides whether a specific tool call from
-	// this endpoint needs confirmation. It takes precedence over
-	// RequireConfirmation when set.
+	// ConfirmationProvider 动态决定该端点的某次具体工具调用是否需要确认。
+	// 设置后优先级高于 RequireConfirmation。
 	ConfirmationProvider tool.ConfirmationProvider
 }
 
-// buildMCPServer builds a confirmation-aware toolset for a single MCP server
-// (Streamable HTTP).
+// buildMCPServer 为单个 MCP 服务（Streamable HTTP）构造带确认能力的工具集。
 func buildMCPServer(server MCPSource) (tool.Toolset, error) {
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:   server.Endpoint,
@@ -91,32 +86,29 @@ func buildMCPServer(server MCPSource) (tool.Toolset, error) {
 	return wrapConfirmation(toolset, server.RequireConfirmation, server.ConfirmationProvider), nil
 }
 
-// SkillSource configures a single skills directory together with its own
-// Human-in-the-Loop confirmation policy. The directory is expected to contain
-// skills as immediate subdirectories, for example:
+// SkillSource 配置一个技能目录，以及它自己的人工确认策略。该目录下的每个
+// 一级子目录即为一个技能，例如：
 //
-//	  skill-1/
-//		   SKILL.md
-//		   assets/
-//	  skill-2/
-//		   SKILL.md
-//		   references/
-//		   scripts/
+//	skill-1/
+//	    SKILL.md
+//	    assets/
+//	skill-2/
+//	    SKILL.md
+//	    references/
+//	    scripts/
 type SkillSource struct {
-	// Path is the skills directory path.
+	// Path 是技能目录路径。
 	Path string
 
-	// RequireConfirmation, when true, requests HITL confirmation for every skill
-	// tool loaded from this directory before execution.
+	// RequireConfirmation 为 true 时，从该目录加载的每个技能工具执行前都要人工确认。
 	RequireConfirmation bool
 
-	// ConfirmationProvider dynamically decides whether a specific skill tool from
-	// this directory needs confirmation. It takes precedence over
-	// RequireConfirmation when set.
+	// ConfirmationProvider 动态决定该目录下的某个技能工具是否需要确认。
+	// 设置后优先级高于 RequireConfirmation。
 	ConfirmationProvider tool.ConfirmationProvider
 }
 
-// buildSkill builds a confirmation-aware toolset for a single skills directory.
+// buildSkill 为单个技能目录构造带确认能力的工具集。
 func buildSkill(ctx context.Context, sk SkillSource) (tool.Toolset, error) {
 	source := skill.NewFileSystemSource(os.DirFS(sk.Path))
 	source, _, err := skill.WithCompletePreloadSource(ctx, source)
@@ -131,8 +123,8 @@ func buildSkill(ctx context.Context, sk SkillSource) (tool.Toolset, error) {
 	return wrapConfirmation(toolset, sk.RequireConfirmation, sk.ConfirmationProvider), nil
 }
 
-// AgentToolSource exposes a single agent as a tool (agent-as-tool), together
-// with its own Human-in-the-Loop confirmation policy.
+// AgentToolSource 把一个 agent 以工具形式暴露（agent-as-tool），并带上它自己的
+// 人工确认策略。
 //
 // 确认粒度是「调用整个子 agent」这一步：子 agent 从父的 runner/session 发起，
 // 确认事件能冒泡到顶层。它不会确认子 agent「内部工具」（那些在隔离
@@ -140,24 +132,21 @@ func buildSkill(ctx context.Context, sk SkillSource) (tool.Toolset, error) {
 // 请把该工具直接挂到 NormalAgent 的 Tools/MCPServers/Skills，或用 workflow
 // SubAgents。
 type AgentToolSource struct {
-	// Agent builds the sub-agent exposed as a tool.
+	// Agent 构造以工具形式暴露的子 agent。
 	Agent AgentBuilder
 
-	// RequireConfirmation, when true, requests HITL confirmation before calling
-	// this sub-agent.
+	// RequireConfirmation 为 true 时，调用这个子 agent 前要先人工确认。
 	RequireConfirmation bool
 
-	// ConfirmationProvider dynamically decides whether this sub-agent call needs
-	// confirmation. It receives the sub-agent (tool) name and takes precedence
-	// over RequireConfirmation when set.
+	// ConfirmationProvider 动态决定这次子 agent 调用是否需要确认。它拿到的是子
+	// agent（工具）的名字，设置后优先级高于 RequireConfirmation。
 	ConfirmationProvider tool.ConfirmationProvider
 }
 
-// buildAgentTool builds a confirmation-aware toolset exposing a single agent as
-// a tool (agent-as-tool). Confirmation gates the whole sub-agent call, which
-// runs in the parent runner/session so the confirmation event bubbles up; it
-// does NOT confirm the sub-agent's internal tools (those run in an isolated
-// sub-runner).
+// buildAgentTool 构造把单个 agent 以工具形式暴露（agent-as-tool）的工具集，并
+// 带确认能力。确认拦的是整个子 agent 调用，它跑在父级的 runner/session 里，
+// 所以确认事件能冒泡上来；它**不会**去确认子 agent 内部的工具（那些跑在隔离的
+// 子 runner 里）。
 func buildAgentTool(llm model.LLM, src AgentToolSource) (tool.Toolset, error) {
 	subAgent, err := src.Agent.Build(llm)
 	if err != nil {
@@ -171,7 +160,7 @@ func buildAgentTool(llm model.LLM, src AgentToolSource) (tool.Toolset, error) {
 	return wrapConfirmation(ts, src.RequireConfirmation, src.ConfirmationProvider), nil
 }
 
-// buildSubAgents builds all sub-agent builders with the resolved model.
+// buildSubAgents 用解析出的模型构造所有子 agent。
 func buildSubAgents(llm model.LLM, builders []AgentBuilder) ([]agent.Agent, error) {
 	subAgents := make([]agent.Agent, 0, len(builders))
 	for _, v := range builders {

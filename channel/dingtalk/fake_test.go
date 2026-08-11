@@ -11,18 +11,18 @@ import (
 	"time"
 
 	"github.com/noble-gase/argon/llmchat"
+	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/adk/v2/session"
 )
 
-// fakeCard is an in-memory cardStore whose failures can be provoked per method,
-// so the Bot's error branches are reachable without Redis or DingTalk.
+// fakeCard 是内存版的 cardStore，每个方法都能单独触发失败，这样不依赖 Redis
+// 和钉钉也能覆盖 Bot 的各条错误分支。
 type fakeCard struct {
 	mu    sync.Mutex
 	cards []string
 
 	pendings map[string]*pendingConfirm
-	leases   map[string]bool
 	byUser   map[string][]string
 	dropped  []string
 
@@ -42,6 +42,9 @@ type fakeCard struct {
 
 	// loseLock 模拟持锁期间被别人接手：返回的 context 立刻取消。
 	loseLock bool
+
+	// panicOnDeliver 模拟回答卡还没建起来就 panic。
+	panicOnDeliver bool
 }
 
 func newFakeCard() *fakeCard {
@@ -55,6 +58,9 @@ func newFakeCard() *fakeCard {
 func (f *fakeCard) Close() {}
 
 func (f *fakeCard) CreateAndDeliverRobot(context.Context, string) (string, error) {
+	if f.panicOnDeliver {
+		panic("deliver boom")
+	}
 	if f.deliverErr != nil {
 		return "", f.deliverErr
 	}
@@ -97,7 +103,7 @@ func (f *fakeCard) StreamingUpdate(ctx context.Context, _, content string, _ boo
 	f.cards = append(f.cards, content)
 }
 
-// lastCard returns the most recent card body, or "" when nothing was rendered.
+// lastCard 返回最近一次渲染的卡片正文，什么都没渲染过时返回 ""。
 func (f *fakeCard) lastCard() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -153,29 +159,32 @@ func (f *fakeCard) dropPending(_ context.Context, outTrackId, userId string) err
 	return nil
 }
 
-func (f *fakeCard) clearConfirms(_ context.Context, userId string) error {
+func (f *fakeCard) clearConfirms(_ context.Context, userId string) ([]string, error) {
 	if f.clearConfirmsErr != nil {
-		return f.clearConfirmsErr
+		f.mu.Lock()
+		trackIds := append([]string(nil), f.byUser[userId]...)
+		f.mu.Unlock()
+		return trackIds, f.clearConfirmsErr
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, id := range f.byUser[userId] {
+	trackIds := append([]string(nil), f.byUser[userId]...)
+	for _, id := range trackIds {
 		delete(f.pendings, id)
 	}
 	delete(f.byUser, userId)
-	return nil
+	return trackIds, nil
 }
 
-// pendingCount reports how many confirmations are still awaiting a decision.
+// pendingCount 返回还在等待决定的确认数量。
 func (f *fakeCard) pendingCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.pendings)
 }
 
-// onlyPending returns the single stored confirmation, failing when there is not
-// exactly one.
+// onlyPending 返回唯一一条已存储的确认，数量不为 1 时直接判失败。
 func (f *fakeCard) onlyPending(t *testing.T) *pendingConfirm {
 	t.Helper()
 
@@ -190,7 +199,7 @@ func (f *fakeCard) onlyPending(t *testing.T) *pendingConfirm {
 	return nil
 }
 
-// deliveredConfirms counts the confirmation cards that were sent.
+// deliveredConfirms 统计已发出的确认卡片数量。
 func (f *fakeCard) deliveredConfirms() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -222,14 +231,17 @@ func (f *fakeCard) lockUser(ctx context.Context, userId string) (context.Context
 	}, nil
 }
 
-// fakeChat records what the Bot sent and replays a scripted event stream. Its
-// pending list stands in for the ADK session, the single source of truth.
+// fakeChat 记录 Bot 发出的内容，并回放一段预设的事件流。它的 pending 列表
+// 替代 ADK 会话，充当唯一真相源。
 type fakeChat struct {
 	mu sync.Mutex
 
 	events    []*session.Event
 	replyErr  error
 	streamErr error
+
+	confirmEvents    []*session.Event
+	useConfirmEvents bool
 
 	pending    []*llmchat.RequestInput
 	pendingErr error
@@ -240,8 +252,8 @@ type fakeChat struct {
 	resetCalls int
 	resetErr   error
 
-	// confirmed receives every Confirm call; resumeConfirmed runs in its own
-	// goroutine, so tests wait on it instead of sleeping.
+	// confirmed 接收每一次 Confirm 调用；resumeConfirmed 跑在自己的 goroutine 里，
+	// 测试靠它等待而不是 sleep。
 	confirmed chan confirmCall
 
 	// panicOnConfirm 模拟恢复过程中的 panic。
@@ -249,6 +261,14 @@ type fakeChat struct {
 
 	// confirmErr 让 Confirm 直接返回指定错误，用于模拟「已确认过」。
 	confirmErr error
+
+	confirmCalls []confirmCall
+
+	pendingCalls int
+
+	// confirms 是会话里仍未做决定的工具确认。
+	confirms    []*llmchat.Confirmation
+	confirmsErr error
 
 	// sessionId 是 Ask/Reply 声称的运行会话。留空表示不校验，非空时 Confirm 会
 	// 像真实实现那样拒绝指向其它会话的确认。
@@ -301,8 +321,16 @@ func (f *fakeChat) Confirm(_ context.Context, _, conversationId, callId string, 
 	if f.sessionId != "" && conversationId != f.sessionId {
 		return nil, llmchat.ErrConversationChanged
 	}
+	f.mu.Lock()
+	f.confirmCalls = append(f.confirmCalls, confirmCall{callId: callId, approved: approved})
+	f.mu.Unlock()
+
 	if f.confirmed != nil {
-		f.confirmed <- confirmCall{callId: callId, approved: approved}
+		// 非阻塞：自动拒绝会连着调用多次，测试替身不该把被测代码卡住
+		select {
+		case f.confirmed <- confirmCall{callId: callId, approved: approved}:
+		default:
+		}
 	}
 	if f.panicOnConfirm {
 		panic("boom")
@@ -310,17 +338,48 @@ func (f *fakeChat) Confirm(_ context.Context, _, conversationId, callId string, 
 	if f.confirmErr != nil {
 		return nil, f.confirmErr
 	}
-	return f.stream(f.events), nil
+	events := f.events
+	if f.useConfirmEvents {
+		events = f.confirmEvents
+	}
+	return f.stream(events), nil
 }
 
-func (f *fakeChat) PendingInputs(context.Context, string) ([]*llmchat.RequestInput, error) {
+// loads 返回会话被完整读取的次数。
+func (f *fakeChat) loads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pendingCalls
+}
+
+// lastConfirm 返回最近一次 Confirm 调用。
+func (f *fakeChat) lastConfirm() confirmCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.confirmCalls) == 0 {
+		return confirmCall{}
+	}
+	return f.confirmCalls[len(f.confirmCalls)-1]
+}
+
+func (f *fakeChat) Pending(context.Context, string) (*llmchat.Pending, error) {
+	f.mu.Lock()
+	f.pendingCalls++
+	f.mu.Unlock()
+
 	if f.pendingErr != nil {
 		return nil, f.pendingErr
+	}
+	if f.confirmsErr != nil {
+		return nil, f.confirmsErr
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]*llmchat.RequestInput(nil), f.pending...), nil
+	return &llmchat.Pending{
+		Inputs:        append([]*llmchat.RequestInput(nil), f.pending...),
+		Confirmations: append([]*llmchat.Confirmation(nil), f.confirms...),
+	}, nil
 }
 
 func (f *fakeChat) ResetAutomatic(context.Context, string) error {
@@ -336,14 +395,13 @@ func (f *fakeChat) ResetAutomatic(context.Context, string) error {
 
 var errRedisDown = errors.New("redis down")
 
-// concurrencyChat measures how many turns overlap, to prove per-user
-// serialization.
+// concurrencyChat 统计有多少轮次发生重叠，用来验证按用户串行化。
 type concurrencyChat struct {
 	inFlight      atomic.Int32
 	maxConcurrent atomic.Int32
 	calls         atomic.Int32
 
-	// hold, when non-nil, blocks every turn until it is closed.
+	// hold 非 nil 时，每一轮都会阻塞直到它被关闭。
 	hold chan struct{}
 }
 
@@ -381,17 +439,23 @@ func (c *concurrencyChat) Confirm(context.Context, string, string, string, bool,
 	return func(func(*session.Event, error) bool) {}, nil
 }
 
-func (c *concurrencyChat) PendingInputs(context.Context, string) ([]*llmchat.RequestInput, error) {
-	return nil, nil
+func (c *concurrencyChat) Pending(context.Context, string) (*llmchat.Pending, error) {
+	return &llmchat.Pending{}, nil
 }
 
 func (c *concurrencyChat) ResetAutomatic(context.Context, string) error { return nil }
 
 func newTestBot(card cardStore, chat chatClient) *Bot {
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	return &Bot{
-		chat:           chat,
-		card:           card,
+		chat: chat,
+		card: card,
+		// 未 Start 的 client，Close 会因为没有连接而直接返回
+		client:         client.NewStreamClient(),
 		timeout:        defaultRequestTimeout,
+		shutdownGrace:  defaultShutdownGrace,
 		cancelKeywords: defaultCancelKeywords,
+		stopCtx:        stopCtx,
+		stopCancel:     stopCancel,
 	}
 }

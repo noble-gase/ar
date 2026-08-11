@@ -11,9 +11,25 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/noble-gase/argon/llmchat"
 	adk_session "google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
 )
+
+func confirmationEvent(callId, toolName string) *adk_session.Event {
+	ev := &adk_session.Event{}
+	ev.Content = &genai.Content{
+		Role: string(genai.RoleModel),
+		Parts: []*genai.Part{{
+			FunctionCall: &genai.FunctionCall{
+				ID:   callId,
+				Name: toolconfirmation.FunctionCallName,
+				Args: map[string]any{"originalFunctionCall": map[string]any{"name": toolName}},
+			},
+		}},
+	}
+	return ev
+}
 
 func textEvent(text string) *adk_session.Event {
 	ev := &adk_session.Event{}
@@ -219,9 +235,40 @@ func TestPendingSurvivesStreamError(t *testing.T) {
 
 	b.streamAnswer(context.Background(), meta, "答案", "track")
 
-	got, _ := chat.PendingInputs(context.Background(), "u1")
-	if len(got) != 1 || got[0].InterruptId != "a" {
-		t.Errorf("pending = %v, want the question preserved", got)
+	got, _ := chat.Pending(context.Background(), "u1")
+	if len(got.Inputs) != 1 || got.Inputs[0].InterruptId != "a" {
+		t.Errorf("pending = %v, want the question preserved", got.Inputs)
+	}
+}
+
+func TestMissingConfirmCardAutoRejects(t *testing.T) {
+	card := newFakeCard()
+	chat := &fakeChat{
+		confirmed:        make(chan confirmCall, 1),
+		sessionId:        "s-today",
+		useConfirmEvents: true,
+	}
+	ev := &adk_session.Event{}
+	ev.Content = &genai.Content{
+		Role: string(genai.RoleModel),
+		Parts: []*genai.Part{{
+			FunctionCall: &genai.FunctionCall{
+				Name: toolconfirmation.FunctionCallName,
+				ID:   "call-1",
+			},
+		}},
+	}
+	chat.events = []*adk_session.Event{ev}
+	b := newTestBot(card, chat) // ConfirmCard 故意留空
+
+	b.streamAnswer(context.Background(), meta, "开始", "track")
+
+	got := awaitConfirm(t, chat)
+	if got.callId != "call-1" || got.approved {
+		t.Errorf("Confirm(%q, %v), want (call-1, false)", got.callId, got.approved)
+	}
+	if !strings.Contains(card.lastCard(), "已自动拒绝") {
+		t.Errorf("card = %q, want the missing confirmation UI explained", card.lastCard())
 	}
 }
 
@@ -280,9 +327,124 @@ func TestCancelWithoutPendingGoesToModel(t *testing.T) {
 	}
 }
 
+// 确认卡投不出去时，ADK 里的确认必须被自动拒绝掉：否则会话上挂着一个谁都回答不了
+// 的确认，Redis 里又没有记录，下一条消息会绕过所有闸门直接开新 run。
+func TestFailedConfirmCardDoesNotStrandTheSession(t *testing.T) {
+	card, chat := newFakeCard(), &fakeChat{events: []*adk_session.Event{confirmationEvent("call-1", "danger_tool")}}
+	card.confirmDeliverErr = errRedisDown
+	b := newTestBot(card, chat)
+	b.confirm = testConfirmCard()
+
+	b.streamAnswer(context.Background(), meta, "删掉它", "track")
+
+	if card.pendingCount() != 0 {
+		t.Errorf("pendingCount = %d, want the undelivered record cleaned up", card.pendingCount())
+	}
+	if got := chat.lastConfirm(); got.callId != "call-1" || got.approved {
+		t.Fatalf("confirm = %+v, want call-1 auto rejected", got)
+	}
+
+	// 第二条消息：确认已经撤掉了，这条才该走到模型
+	chat.events = nil
+	b.streamAnswer(context.Background(), meta, "你好", "track2")
+
+	if chat.askedText != "你好" {
+		t.Errorf("askedText = %q, want the next message to run normally", chat.askedText)
+	}
+}
+
+// 待答问题和待确认调用来自同一次会话加载：全历史查询在长会话里不便宜，路由判断
+// 不该为此读两遍。收尾时要看运行之后的最新状态，那次是必须的。
+func TestPendingLoadedOncePerMessage(t *testing.T) {
+	card, chat := newFakeCard(), &fakeChat{}
+	b := newTestBot(card, chat)
+
+	b.streamAnswer(context.Background(), meta, "你好", "track")
+
+	if got := chat.loads(); got != 2 {
+		t.Errorf("session loads = %d, want 2: one to route the message, one to finish", got)
+	}
+}
+
+// 工具确认不在待答问题列表里。挂着未决确认时再发普通消息，不能另起一轮——
+// 那会让确认卡指向的执行和新 run 同时挂在一个会话上。
+//
+// 判定依据是 ADK 会话：这里刻意不写 Redis 记录，模拟记录丢失或被淘汰。
+func TestMessageBlockedWhileConfirmationPending(t *testing.T) {
+	card := newFakeCard()
+	chat := &fakeChat{confirms: []*llmchat.Confirmation{{CallId: "call-1", ToolName: "danger_tool"}}}
+	b := newTestBot(card, chat)
+
+	b.streamAnswer(context.Background(), meta, "再帮我查个别的", "track")
+
+	if chat.askedText != "" {
+		t.Errorf("askedText = %q, want no new run while a confirmation is pending", chat.askedText)
+	}
+	if !strings.Contains(card.lastCard(), "等待确认") {
+		t.Errorf("card = %q, want the user pointed at the confirmation card", card.lastCard())
+	}
+}
+
+// 反过来：Redis 里留着已经作废的旧记录时，不能把用户挡在门外——会话里没有未决
+// 确认，这条消息就该正常跑。
+func TestStaleConfirmRecordDoesNotBlockMessages(t *testing.T) {
+	card, chat := newFakeCard(), &fakeChat{}
+	if err := card.savePending(context.Background(), "confirm-track", &pendingConfirm{CallId: "gone", UserId: "u1"}); err != nil {
+		t.Fatalf("savePending() error = %v", err)
+	}
+	b := newTestBot(card, chat)
+
+	b.streamAnswer(context.Background(), meta, "你好", "track")
+
+	if chat.askedText != "你好" {
+		t.Errorf("askedText = %q, want a stale channel-side record not to block the user", chat.askedText)
+	}
+}
+
+// 只有工具确认、没有图问题时，「取消」同样要生效。
+func TestCancelWorksWithOnlyConfirmationPending(t *testing.T) {
+	card := newFakeCard()
+	chat := &fakeChat{confirms: []*llmchat.Confirmation{{CallId: "call-1", ToolName: "danger_tool"}}}
+	if err := card.savePending(context.Background(), "confirm-track", &pendingConfirm{CallId: "call-1", UserId: "u1"}); err != nil {
+		t.Fatalf("savePending() error = %v", err)
+	}
+	b := newTestBot(card, chat)
+
+	b.streamAnswer(context.Background(), meta, "取消", "track")
+
+	if chat.resetCalls != 1 {
+		t.Errorf("resetCalls = %d, want the conversation reset", chat.resetCalls)
+	}
+	if card.pendingCount() != 0 {
+		t.Errorf("pendingCount = %d, want the confirmation invalidated", card.pendingCount())
+	}
+	if chat.askedText != "" {
+		t.Errorf("askedText = %q, want the cancel keyword not to reach the model", chat.askedText)
+	}
+}
+
+// 查不到确认记录时状态不明，不能赌「没有未决确认」就直接开跑。
+func TestUnknownConfirmationStateStopsProcessing(t *testing.T) {
+	card, chat := newFakeCard(), &fakeChat{}
+	chat.confirmsErr = errRedisDown
+	b := newTestBot(card, chat)
+
+	b.streamAnswer(context.Background(), meta, "你好", "track")
+
+	if chat.askedText != "" {
+		t.Errorf("askedText = %q, want no run when the confirmation state is unknown", chat.askedText)
+	}
+	if !strings.Contains(card.lastCard(), "暂时无法处理") {
+		t.Errorf("card = %q, want the user asked to retry", card.lastCard())
+	}
+}
+
 // 取消要真正丢弃 ADK 中 waiting 的图状态，而不只是不再追问。
 func TestCancelResetsSession(t *testing.T) {
 	card := newFakeCard()
+	if err := card.savePending(context.Background(), "confirm-track", &pendingConfirm{CallId: "call-1", UserId: "u1"}); err != nil {
+		t.Fatalf("savePending() error = %v", err)
+	}
 	chat := &fakeChat{pending: []*llmchat.RequestInput{ask("a", "问题 A", nil)}}
 	b := newTestBot(card, chat)
 
@@ -294,8 +456,17 @@ func TestCancelResetsSession(t *testing.T) {
 	if chat.askedText != "" {
 		t.Errorf("askedText = %q, want the cancel keyword not to reach the model", chat.askedText)
 	}
-	if got, _ := chat.PendingInputs(context.Background(), "u1"); len(got) != 0 {
+	if got, _ := chat.Pending(context.Background(), "u1"); len(got.Inputs) != 0 {
 		t.Errorf("pending = %v, want empty after cancel", got)
+	}
+	card.mu.Lock()
+	defer card.mu.Unlock()
+	var cancelled bool
+	for _, content := range card.cards {
+		cancelled = cancelled || strings.Contains(content, "已随对话取消")
+	}
+	if !cancelled {
+		t.Errorf("cards = %v, want the old confirmation card invalidated visibly", card.cards)
 	}
 }
 
@@ -311,6 +482,29 @@ func TestCancelReportsFailure(t *testing.T) {
 
 	if !strings.Contains(card.lastCard(), "取消失败") {
 		t.Errorf("card = %q, want a failure notice", card.lastCard())
+	}
+}
+
+func TestCancelSettlesKnownCardsWhenRedisCleanupFails(t *testing.T) {
+	card := newFakeCard()
+	if err := card.savePending(context.Background(), "confirm-track", &pendingConfirm{CallId: "call-1", UserId: "u1"}); err != nil {
+		t.Fatalf("savePending() error = %v", err)
+	}
+	card.clearConfirmsErr = errRedisDown
+	chat := &fakeChat{pending: []*llmchat.RequestInput{ask("a", "问题 A", nil)}}
+	b := newTestBot(card, chat)
+
+	b.streamAnswer(context.Background(), meta, "/cancel", "track")
+
+	card.mu.Lock()
+	defer card.mu.Unlock()
+	var cancelled, warned bool
+	for _, content := range card.cards {
+		cancelled = cancelled || strings.Contains(content, "已随对话取消")
+		warned = warned || strings.Contains(content, "没能变灰")
+	}
+	if !cancelled || !warned {
+		t.Errorf("cards = %v, want known old cards settled and cleanup failure reported", card.cards)
 	}
 }
 

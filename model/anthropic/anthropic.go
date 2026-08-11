@@ -22,10 +22,10 @@ import (
 
 var ErrNoContentInResponse = errors.New("no content in Anthropic response")
 
-// anthropicToolIdPattern matches valid Anthropic tool_use IDs: ^[a-zA-Z0-9_-]+$
+// anthropicToolIdPattern 匹配合法的 Anthropic tool_use ID：^[a-zA-Z0-9_-]+$
 var anthropicToolIdPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-// anthropicModel implements model.LLM using the official Anthropic Go SDK.
+// anthropicModel 用官方 Anthropic Go SDK 实现 model.LLM。
 type anthropicModel struct {
 	client            *anthropic.Client
 	name              string
@@ -33,36 +33,36 @@ type anthropicModel struct {
 	thinkBudgetTokens int
 }
 
-// HTTPOptions holds optional HTTP-level configuration for the Anthropic client.
+// HTTPOptions 是 Anthropic 客户端的可选 HTTP 层配置。
 type HTTPOptions struct {
 	Client  *http.Client
 	Headers http.Header
 }
 
-// Config holds configuration for creating a new Model.
+// Config 是创建 Model 所需的配置。
 type Config struct {
-	// APIKey is the Anthropic API key. If empty, uses ANTHROPIC_API_KEY env var.
+	// APIKey 是 Anthropic 的 API key。留空则使用环境变量 ANTHROPIC_API_KEY。
 	APIKey string
-	// BaseURL is the API base URL (optional, for custom endpoints).
+	// BaseURL 是 API 基础地址（可选，用于自定义端点）。
 	BaseURL string
-	// ModelName is the model to use (e.g., "claude-sonnet-4-5-20250929").
+	// ModelName 是使用的模型（如 "claude-sonnet-4-5-20250929"）。
 	ModelName string
-	// MaxOutputTokens sets the default maximum number of tokens Claude can generate in its response.
-	// This is an output-only limit and does not affect the input/context window.
-	// If zero, defaults to 4096.
+	// MaxOutputTokens 设置 Claude 单次响应能生成的默认 token 上限。
+	// 它只限制输出，不影响输入/上下文窗口。
+	// 为零时默认 4096。
 	MaxOutputTokens int
-	// ThinkBudgetTokens enables extended thinking and sets how many output tokens Claude
-	// can spend generating its internal reasoning before producing the final response.
-	// Thinking tokens are output tokens — Claude generates the reasoning as text, it just
-	// isn't shown to the user (or is returned in a separate block).
-	// Must be >= 1024 and strictly less than MaxOutputTokens.
-	// If zero, extended thinking is disabled.
+	// ThinkBudgetTokens 开启扩展思考，并设定 Claude 在给出最终答案前
+	// 能花在内部推理上的输出 token 数。
+	// 思考 token 属于输出 token——Claude 就是把推理当文本生成出来的，
+	// 只是不展示给用户（或放在单独的块里返回）。
+	// 必须 >= 1024，且严格小于 MaxOutputTokens。
+	// 为零时关闭扩展思考。
 	ThinkBudgetTokens int
-	// HTTPOptions holds optional HTTP-level overrides (e.g. extra headers).
+	// HTTPOptions 是可选的 HTTP 层覆盖配置（如附加请求头）。
 	HTTPOptions HTTPOptions
 }
 
-// NewModel returns [model.LLM], backed by the Anthropic API.
+// NewModel 返回基于 Anthropic API 的 [model.LLM]。
 func NewModel(cfg Config) model.LLM {
 	opts := []option.RequestOption{}
 
@@ -91,12 +91,12 @@ func NewModel(cfg Config) model.LLM {
 	}
 }
 
-// Name returns the model name (e.g. "claude-sonnet-4-5-20250929").
+// Name 返回模型名称（如 "claude-sonnet-4-5-20250929"）。
 func (m *anthropicModel) Name() string {
 	return m.name
 }
 
-// GenerateContent sends the request to Anthropic and returns responses (streaming or single).
+// GenerateContent 向 Anthropic 发起请求并返回响应（流式或单条）。
 func (m *anthropicModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	if stream {
 		return m.generateStream(ctx, req)
@@ -104,7 +104,7 @@ func (m *anthropicModel) GenerateContent(ctx context.Context, req *model.LLMRequ
 	return m.generate(ctx, req)
 }
 
-// generate sends a single request and yields one complete response.
+// generate 发起单次请求，产出一个完整响应。
 func (m *anthropicModel) generate(ctx context.Context, req *model.LLMRequest) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		params, err := m.buildMessageParams(req)
@@ -129,7 +129,7 @@ func (m *anthropicModel) generate(ctx context.Context, req *model.LLMRequest) it
 	}
 }
 
-// generateStream sends a request and yields partial responses as they arrive, then a final complete one.
+// generateStream 发起请求，边到达边产出增量响应，最后再产出一个完整响应。
 func (m *anthropicModel) generateStream(ctx context.Context, req *model.LLMRequest) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
 		params, err := m.buildMessageParams(req)
@@ -150,7 +150,7 @@ func (m *anthropicModel) generateStream(ctx context.Context, req *model.LLMReque
 				return
 			}
 
-			// Yield partial text content
+			// 产出增量文本
 			switch eventVariant := event.AsAny().(type) {
 			case anthropic.ContentBlockDeltaEvent:
 				switch deltaVariant := eventVariant.Delta.AsAny().(type) {
@@ -175,7 +175,7 @@ func (m *anthropicModel) generateStream(ctx context.Context, req *model.LLMReque
 			return
 		}
 
-		// Build final aggregated response
+		// 构造最终的聚合响应
 		llmResp, err := m.convertResponse(&message)
 		if err != nil {
 			yield(nil, err)
@@ -188,9 +188,9 @@ func (m *anthropicModel) generateStream(ctx context.Context, req *model.LLMReque
 	}
 }
 
-// buildMessageParams converts an LLMRequest into Anthropic's API format (system prompt, messages, tools, config).
+// buildMessageParams 把 LLMRequest 转换成 Anthropic 的 API 格式（系统提示、消息、工具、配置）。
 func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.MessageNewParams, error) {
-	// Default max tokens (required by Anthropic API)
+	// 默认最大 token 数（Anthropic API 必填）
 	maxTokens := int64(4096)
 	if m.maxOutputTokens > 0 {
 		maxTokens = int64(m.maxOutputTokens)
@@ -212,7 +212,7 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 		}
 	}
 
-	// Add system instruction if present
+	// 有系统指令则加上
 	if req.Config != nil && req.Config.SystemInstruction != nil {
 		systemText := extractTextFromContent(req.Config.SystemInstruction)
 		if systemText != "" {
@@ -222,7 +222,7 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 		}
 	}
 
-	// Convert content messages
+	// 转换内容消息
 	messages := []anthropic.MessageParam{}
 	for _, content := range req.Contents {
 		msg, err := m.convertContentToMessage(content)
@@ -234,14 +234,14 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 		}
 	}
 
-	// Repair message history to comply with Anthropic's requirements
-	// (each tool_use must have a corresponding tool_result immediately after)
+	// 修整消息历史以满足 Anthropic 的要求
+	// （每个 tool_use 后面必须紧跟对应的 tool_result）
 	messages = repairMessageHistory(messages)
 	messages = trimFinalAssistantWhitespace(messages)
 
 	params.Messages = messages
 
-	// Apply config settings
+	// 应用配置项
 	if req.Config != nil {
 		if req.Config.Temperature != nil {
 			params.Temperature = anthropic.Float(float64(*req.Config.Temperature))
@@ -253,7 +253,7 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 			params.StopSequences = req.Config.StopSequences
 		}
 
-		// Convert tools
+		// 转换工具
 		if len(req.Config.Tools) > 0 {
 			tools, err := m.convertTools(req.Config.Tools)
 			if err != nil {
@@ -264,18 +264,17 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 
 		// ToolConfig → tool_choice
 		//
-		// Maps genai.FunctionCallingConfig.Mode to Anthropic's tool_choice:
-		//   ModeAuto → {type: "auto"} (default behaviour; model may or may not call a tool)
-		//   ModeAny  → {type: "any"}  (model MUST call a tool; use for agentic loops
-		//                              that can't handle a plain-text reply)
-		//   ModeNone → {type: "none"} (tools disabled for this call even if provided)
+		// 把 genai.FunctionCallingConfig.Mode 映射到 Anthropic 的 tool_choice：
+		//   ModeAuto → {type: "auto"} （默认行为，模型可调可不调工具）
+		//   ModeAny  → {type: "any"}  （模型必须调工具，用于无法处理纯文本回复的
+		//                              agent 循环）
+		//   ModeNone → {type: "none"} （本次调用禁用工具，即使传了工具定义）
 		//
-		// When AllowedFunctionNames holds exactly one name with ModeAny, Anthropic's
-		// equivalent is {type: "tool", name: "..."}. For multiple names we fall back
-		// to {type: "any"} because Anthropic's tool variant accepts a single name,
-		// not a list — same pragmatic choice as the OpenAI adapter. Callers who need
-		// a multi-function allowlist should rely on ModeAny plus prompt-level
-		// instructions to pick within the allowed set.
+		// ModeAny 且 AllowedFunctionNames 恰好只有一个名字时，Anthropic 的对应物是
+		// {type: "tool", name: "..."}。有多个名字时退回 {type: "any"}，因为 Anthropic
+		// 的 tool 变体只接受单个名字而不是列表——和 OpenAI 适配器一样的取舍。需要
+		// 多函数白名单的调用方，应当用 ModeAny 加提示词来约束模型在允许的集合内
+		// 选择。
 		if req.Config.ToolConfig != nil && req.Config.ToolConfig.FunctionCallingConfig != nil {
 			fcc := req.Config.ToolConfig.FunctionCallingConfig
 			switch fcc.Mode {
@@ -302,7 +301,7 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 	return params, nil
 }
 
-// convertContentToMessage transforms a genai.Content (text, images, tool calls/results) into an Anthropic message.
+// convertContentToMessage 把 genai.Content（文本、图片、工具调用/结果）转换成 Anthropic 消息。
 func (m *anthropicModel) convertContentToMessage(content *genai.Content) (*anthropic.MessageParam, error) {
 	role := convertRoleToAnthropic(content.Role)
 
@@ -351,14 +350,14 @@ func (m *anthropicModel) convertContentToMessage(content *genai.Content) (*anthr
 	return &anthropic.MessageParam{Role: role, Content: blocks}, nil
 }
 
-// convertResponse transforms Anthropic's response (text, tool_use blocks, usage) into the generic LLMResponse.
+// convertResponse 把 Anthropic 的响应（文本、tool_use 块、用量）转换成通用的 LLMResponse。
 func (m *anthropicModel) convertResponse(resp *anthropic.Message) (*model.LLMResponse, error) {
 	content := &genai.Content{
 		Role:  genai.RoleModel,
 		Parts: []*genai.Part{},
 	}
 
-	// Convert content blocks
+	// 转换内容块
 	for _, block := range resp.Content {
 		switch variant := block.AsAny().(type) {
 		case anthropic.TextBlock:
@@ -374,7 +373,7 @@ func (m *anthropicModel) convertResponse(resp *anthropic.Message) (*model.LLMRes
 		}
 	}
 
-	// Convert usage metadata
+	// 转换用量元数据
 	var usageMetadata *genai.GenerateContentResponseUsageMetadata
 	if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
 		usageMetadata = &genai.GenerateContentResponseUsageMetadata{
@@ -392,7 +391,7 @@ func (m *anthropicModel) convertResponse(resp *anthropic.Message) (*model.LLMRes
 	}, nil
 }
 
-// convertTools transforms genai tool definitions into Anthropic's tool format (name, description, JSON schema).
+// convertTools 把 genai 的工具定义转换成 Anthropic 的工具格式（名称、描述、JSON schema）。
 func (m *anthropicModel) convertTools(genaiTools []*genai.Tool) ([]anthropic.ToolUnionParam, error) {
 	var tools []anthropic.ToolUnionParam
 
@@ -408,13 +407,12 @@ func (m *anthropicModel) convertTools(genaiTools []*genai.Tool) ([]anthropic.Too
 			}
 
 			var inputSchema anthropic.ToolInputSchemaParam
-			// Type is required by Anthropic API, must be "object"
+			// Anthropic API 要求 Type 必填，且必须是 "object"
 			inputSchema.Type = "object"
 			if params != nil {
-				// ParametersJsonSchema is typically *jsonschema.Schema, not map[string]any.
-				// Marshal/unmarshal normalises any concrete type into a plain map so we
-				// can extract fields generically. If it is already a map (e.g. built by
-				// hand in Go) we use it directly to avoid the round-trip.
+				// ParametersJsonSchema 通常是 *jsonschema.Schema，而不是 map[string]any。
+				// 走一遍 Marshal/Unmarshal 可以把任意具体类型归一成普通 map，便于统一
+				// 取字段。如果本来就是 map（比如在 Go 里手写的），直接用，省掉这趟往返。
 				var m map[string]any
 				if dm, ok := params.(map[string]any); ok {
 					m = dm
@@ -429,10 +427,10 @@ func (m *anthropicModel) convertTools(genaiTools []*genai.Tool) ([]anthropic.Too
 					if props, ok := m["properties"]; ok {
 						inputSchema.Properties = props
 					}
-					// After json.Unmarshal, string arrays always arrive as [], never []string,
-					// regardless of the source type. We handle both to be defensive:
-					// []string covers maps built directly in Go without a JSON round-trip;
-					// []any covers the normal unmarshal path.
+					// json.Unmarshal 之后，字符串数组一律是 []any 而不是 []string，与源类型
+					// 无关。两种都处理是为了稳妥：
+					// []string 覆盖在 Go 里直接构造、没走 JSON 往返的 map；
+					// []any 覆盖正常的反序列化路径。
 					switch req := m["required"].(type) {
 					case []string:
 						inputSchema.Required = req
@@ -459,7 +457,7 @@ func (m *anthropicModel) convertTools(genaiTools []*genai.Tool) ([]anthropic.Too
 	return tools, nil
 }
 
-// convertRoleToAnthropic maps "user"/"model" to Anthropic's role enum (user/assistant).
+// convertRoleToAnthropic 把 "user"/"model" 映射到 Anthropic 的 role 枚举（user/assistant）。
 func convertRoleToAnthropic(role string) anthropic.MessageParamRole {
 	switch role {
 	case "user":
@@ -471,7 +469,7 @@ func convertRoleToAnthropic(role string) anthropic.MessageParamRole {
 	}
 }
 
-// convertStopReason maps Anthropic's stop reasons (end_turn, max_tokens, tool_use) to genai.FinishReason.
+// convertStopReason 把 Anthropic 的停止原因（end_turn、max_tokens、tool_use）映射到 genai.FinishReason。
 func convertStopReason(reason anthropic.StopReason) genai.FinishReason {
 	switch reason {
 	case anthropic.StopReasonEndTurn:
@@ -487,8 +485,8 @@ func convertStopReason(reason anthropic.StopReason) genai.FinishReason {
 	}
 }
 
-// convertToolInput converts tool input to map[string]any for storing in genai.FunctionCall.Args.
-// Used when receiving tool_use blocks from Anthropic responses.
+// convertToolInput 把工具入参转换成 map[string]any，用于存进 genai.FunctionCall.Args。
+// 在接收 Anthropic 响应里的 tool_use 块时使用。
 func convertToolInput(input any) map[string]any {
 	if input == nil {
 		return map[string]any{}
@@ -497,7 +495,7 @@ func convertToolInput(input any) map[string]any {
 		return m
 	}
 
-	// Get JSON bytes: use directly if json.RawMessage, otherwise marshal
+	// 取 JSON 字节：是 json.RawMessage 就直接用，否则做一次序列化
 	var data []byte
 	if raw, ok := input.(json.RawMessage); ok {
 		data = raw
@@ -515,7 +513,7 @@ func convertToolInput(input any) map[string]any {
 	return result
 }
 
-// extractTextFromContent concatenates all text parts from a genai.Content with newlines.
+// extractTextFromContent 用换行拼接 genai.Content 里的所有文本 part。
 func extractTextFromContent(content *genai.Content) string {
 	if content == nil {
 		return ""
@@ -529,18 +527,18 @@ func extractTextFromContent(content *genai.Content) string {
 	return strings.Join(texts, "\n")
 }
 
-// sanitizeToolId replaces invalid tool IDs (chars outside [a-zA-Z0-9_-]) with a SHA256-based valid ID.
+// sanitizeToolId 把非法的工具 ID（含 [a-zA-Z0-9_-] 之外的字符）换成基于 SHA256 的合法 ID。
 func sanitizeToolId(id string) string {
 	if anthropicToolIdPattern.MatchString(id) {
 		return id
 	}
 
-	// Generate a valid ID from the original using SHA256
+	// 用 SHA256 从原 ID 生成一个合法 ID
 	hash := sha256.Sum256([]byte(id))
 	return "toolu_" + hex.EncodeToString(hash[:16])
 }
 
-// repairMessageHistory removes orphaned tool_use and tool_result blocks.
+// repairMessageHistory 移除落单的 tool_use 与 tool_result 块。
 func repairMessageHistory(messages []anthropic.MessageParam) []anthropic.MessageParam {
 	if len(messages) == 0 {
 		return messages
@@ -594,12 +592,11 @@ func repairMessageHistory(messages []anthropic.MessageParam) []anthropic.Message
 	return result
 }
 
-// trimFinalAssistantWhitespace right-trims the last text block of a trailing
-// assistant message. Anthropic rejects a request whose final assistant content
-// ends in whitespace ("final assistant content cannot end with trailing
-// whitespace"): the prefill continues from those exact tokens and a trailing
-// space is ambiguous to tokenise. A block left empty after trimming is dropped,
-// since empty text blocks are also rejected.
+// trimFinalAssistantWhitespace 把结尾的 assistant 消息里最后一个文本块做右侧
+// 去空白。Anthropic 会拒绝最终 assistant 内容以空白结尾的请求（"final
+// assistant content cannot end with trailing whitespace"）：预填充要从这些
+// token 精确续写，结尾空格的分词是有歧义的。去空白后变空的块会被丢掉，
+// 因为空文本块同样会被拒绝。
 func trimFinalAssistantWhitespace(messages []anthropic.MessageParam) []anthropic.MessageParam {
 	if len(messages) == 0 {
 		return messages
@@ -623,7 +620,7 @@ func trimFinalAssistantWhitespace(messages []anthropic.MessageParam) []anthropic
 	return messages
 }
 
-// extractToolUseIds returns all tool_use IDs from an assistant message.
+// extractToolUseIds 返回 assistant 消息里的所有 tool_use ID。
 func extractToolUseIds(msg anthropic.MessageParam) []string {
 	var ids []string
 	for _, block := range msg.Content {
@@ -634,7 +631,7 @@ func extractToolUseIds(msg anthropic.MessageParam) []string {
 	return ids
 }
 
-// extractToolResultIds returns all tool_result IDs from a user message.
+// extractToolResultIds 返回 user 消息里的所有 tool_result ID。
 func extractToolResultIds(msg anthropic.MessageParam) []string {
 	var ids []string
 	for _, block := range msg.Content {
@@ -645,7 +642,7 @@ func extractToolResultIds(msg anthropic.MessageParam) []string {
 	return ids
 }
 
-// filterToolUse keeps tool_use blocks whose IDs are in allowedIds. If allowedIds is nil, removes all tool_use.
+// filterToolUse 只保留 ID 在 allowedIds 中的 tool_use 块。allowedIds 为 nil 时全部移除。
 func filterToolUse(msg anthropic.MessageParam, allowedIds map[string]bool) anthropic.MessageParam {
 	var filteredBlocks []anthropic.ContentBlockParamUnion
 	for _, block := range msg.Content {
@@ -660,7 +657,7 @@ func filterToolUse(msg anthropic.MessageParam, allowedIds map[string]bool) anthr
 	return anthropic.MessageParam{Role: msg.Role, Content: filteredBlocks}
 }
 
-// filterToolResult keeps tool_result blocks whose IDs are in allowedIds. If allowedIds is nil, removes all tool_result blocks.
+// filterToolResult 只保留 ID 在 allowedIds 中的 tool_result 块。allowedIds 为 nil 时全部移除。
 func filterToolResult(msg anthropic.MessageParam, allowedIds map[string]bool) anthropic.MessageParam {
 	var filteredBlocks []anthropic.ContentBlockParamUnion
 	for _, block := range msg.Content {
@@ -675,10 +672,10 @@ func filterToolResult(msg anthropic.MessageParam, allowedIds map[string]bool) an
 	return anthropic.MessageParam{Role: msg.Role, Content: filteredBlocks}
 }
 
-// convertInlineDataToBlock converts inline data to the appropriate Anthropic content block.
-// Supports images (jpeg, png, gif, webp), PDFs, and plain text documents.
-// Returns an error for unsupported MIME types, matching Gemini's behavior of letting
-// the request fail rather than silently dropping content.
+// convertInlineDataToBlock 把内联数据转换成对应的 Anthropic 内容块。
+// 支持图片（jpeg、png、gif、webp）、PDF 和纯文本文档。
+// 遇到不支持的 MIME 类型返回错误，与 Gemini 的行为一致：让请求失败，
+// 而不是悄悄丢掉内容。
 func convertInlineDataToBlock(data *genai.Blob) (*anthropic.ContentBlockParamUnion, error) {
 	if data == nil {
 		return nil, fmt.Errorf("inline data is nil")
@@ -728,13 +725,13 @@ func convertInlineDataToBlock(data *genai.Blob) (*anthropic.ContentBlockParamUni
 	}
 }
 
-// hasContent returns true if the message has at least one content block.
+// hasContent 判断消息是否至少有一个内容块。
 func hasContent(msg anthropic.MessageParam) bool {
 	return len(msg.Content) > 0
 }
 
-// lowercaseTypes recursively traverses a JSON schema map and lowercases all "type" fields
-// to comply with Anthropic's JSON schema validation.
+// lowercaseTypes 递归遍历 JSON schema map，把所有 "type" 字段转成小写，
+// 以符合 Anthropic 的 JSON schema 校验要求。
 func lowercaseTypes(m map[string]any) {
 	for k, v := range m {
 		if k == "type" {

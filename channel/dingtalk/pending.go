@@ -10,8 +10,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// confirmTTL 是确认记录的保留时长。
-const confirmTTL = time.Hour
+// confirmTTL 是确认记录的保留时长，它要活得比自动会话更久。
+//
+// 记录先于会话过期的话，ADK 里的确认仍然 pending，但原卡已经点不动了，而 /cancel
+// 只处理图工作流的待答问题，盖不到纯工具确认。自然日轮换后的点击由 SessionId
+// 校验拦下，不需要额外的状态机。
+const confirmTTL = 25 * time.Hour
 
 // pendingConfirm 是一次待人工确认的工具调用，按确认卡片的 outTrackId 存储。
 //
@@ -27,9 +31,6 @@ type pendingConfirm struct {
 	// SessionId 是发出这次确认的那次运行所在的会话，必须取自运行本身。自动会话跨
 	// 自然日轮换，若在投卡时重新计算，横跨午夜的执行会把记录挂到第二天的会话上。
 	SessionId string `json:"session_id"`
-
-	// Prompt 是确认卡片的正文，恢复失败需要重新投卡时复用。
-	Prompt string `json:"prompt,omitempty"`
 }
 
 func (s *CardSender) pendingKey(outTrackId string) string {
@@ -80,14 +81,14 @@ func (s *CardSender) dropPending(ctx context.Context, outTrackId, userId string)
 	return err
 }
 
-// clearConfirms 作废一个用户名下的全部确认记录。会话被重置后，旧卡片上的按钮不能
-// 再去恢复一个已经不存在的工具调用。
-func (s *CardSender) clearConfirms(ctx context.Context, userId string) error {
+// clearConfirms 作废一个用户名下的全部确认记录，并返回对应卡片 ID 供调用方更新
+// UI。会话被重置后，旧卡片上的按钮不能再去恢复一个已经不存在的工具调用。
+func (s *CardSender) clearConfirms(ctx context.Context, userId string) ([]string, error) {
 	indexKey := s.userConfirmsKey(userId)
 
 	trackIds, err := s.reduc.SMembers(ctx, indexKey).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
-		return err
+		return nil, err
 	}
 
 	pipe := s.reduc.TxPipeline()
@@ -96,5 +97,5 @@ func (s *CardSender) clearConfirms(ctx context.Context, userId string) error {
 	}
 	pipe.Del(ctx, indexKey)
 	_, err = pipe.Exec(ctx)
-	return err
+	return trackIds, err
 }

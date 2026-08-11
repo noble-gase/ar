@@ -106,8 +106,8 @@ func TestRepairMessageHistoryOrphanAcrossConsecutiveAssistants(t *testing.T) {
 		},
 	}
 
-	// A has no matching tool_result, so its (now empty) assistant message is
-	// dropped; B pairs with its result and is preserved.
+	// A 没有配对的 tool_result，它那条（已变空的）assistant 消息会被丢弃；
+	// B 与结果配对，因此保留。
 	got := repairMessageHistory(messages)
 	if len(got) != 2 {
 		t.Fatalf("repairMessageHistory() returned %d messages, want 2", len(got))

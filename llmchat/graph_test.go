@@ -12,7 +12,7 @@ import (
 	"google.golang.org/adk/v2/workflow"
 )
 
-// stubAgent builds a no-op agent so graph wiring can be tested without a model.
+// stubAgent 构造一个空操作 agent，用于在没有模型的情况下测试图的连线。
 type stubAgent struct {
 	name string
 }

@@ -450,15 +450,15 @@ func TestPendingInputsRebuiltFromSession(t *testing.T) {
 		}
 	}
 
-	pending, err := chat.PendingInputs(ctx, "u1")
+	pending, err := chat.pendingInputs(ctx, "u1")
 	if err != nil {
-		t.Fatalf("PendingInputs() error = %v", err)
+		t.Fatalf("pendingInputs() error = %v", err)
 	}
 	if len(pending) != 2 {
-		t.Fatalf("PendingInputs() = %d requests, want 2", len(pending))
+		t.Fatalf("pendingInputs() = %d requests, want 2", len(pending))
 	}
 	if pending[0].Message == "" {
-		t.Error("PendingInputs() lost the prompt text, the channel could not re-ask")
+		t.Error("pendingInputs() lost the prompt text, the channel could not re-ask")
 	}
 
 	// 回答其中一个后，它必须从待答列表里消失，另一个仍在
@@ -472,12 +472,12 @@ func TestPendingInputsRebuiltFromSession(t *testing.T) {
 		}
 	}
 
-	after, err := chat.PendingInputs(ctx, "u1")
+	after, err := chat.pendingInputs(ctx, "u1")
 	if err != nil {
-		t.Fatalf("PendingInputs() after reply error = %v", err)
+		t.Fatalf("pendingInputs() after reply error = %v", err)
 	}
 	if len(after) != 1 {
-		t.Fatalf("PendingInputs() after reply = %d, want 1", len(after))
+		t.Fatalf("pendingInputs() after reply = %d, want 1", len(after))
 	}
 	if after[0].InterruptId == pending[0].InterruptId {
 		t.Errorf("answered request %q is still listed as pending", after[0].InterruptId)
@@ -493,8 +493,8 @@ func TestPendingInputsRebuiltFromSession(t *testing.T) {
 			t.Fatalf("Reply() event error = %v", err)
 		}
 	}
-	if got, err := chat.PendingInputs(ctx, "u1"); err != nil || len(got) != 0 {
-		t.Errorf("PendingInputs() = %v (err=%v), want empty", got, err)
+	if got, err := chat.pendingInputs(ctx, "u1"); err != nil || len(got) != 0 {
+		t.Errorf("pendingInputs() = %v (err=%v), want empty", got, err)
 	}
 }
 
@@ -565,9 +565,9 @@ func TestPendingInputsKeepsRejectedAnswer(t *testing.T) {
 		}
 	}
 
-	pending, err := chat.PendingInputs(ctx, "u1")
+	pending, err := chat.pendingInputs(ctx, "u1")
 	if err != nil || len(pending) != 1 {
-		t.Fatalf("PendingInputs() = %v (err=%v), want 1 request", pending, err)
+		t.Fatalf("pendingInputs() = %v (err=%v), want 1 request", pending, err)
 	}
 
 	// 用纯文本回答，schema 要求对象，ADK 会拒绝
@@ -576,12 +576,12 @@ func TestPendingInputsKeepsRejectedAnswer(t *testing.T) {
 	}
 
 	// 关键：问题必须仍在待答列表里，否则用户再也无法重答
-	stillPending, err := chat.PendingInputs(ctx, "u1")
+	stillPending, err := chat.pendingInputs(ctx, "u1")
 	if err != nil {
-		t.Fatalf("PendingInputs() error = %v", err)
+		t.Fatalf("pendingInputs() error = %v", err)
 	}
 	if len(stillPending) != 1 || stillPending[0].InterruptId != pending[0].InterruptId {
-		t.Fatalf("PendingInputs() after a rejected answer = %v, want the question still pending", stillPending)
+		t.Fatalf("pendingInputs() after a rejected answer = %v, want the question still pending", stillPending)
 	}
 
 	// 重答合规内容后才算解决
@@ -591,9 +591,18 @@ func TestPendingInputsKeepsRejectedAnswer(t *testing.T) {
 	if sinkGot.Load() != true {
 		t.Errorf("sink approved = %v, want true", sinkGot.Load())
 	}
-	if got, err := chat.PendingInputs(ctx, "u1"); err != nil || len(got) != 0 {
-		t.Errorf("PendingInputs() = %v (err=%v), want empty once answered", got, err)
+	if got, err := chat.pendingInputs(ctx, "u1"); err != nil || len(got) != 0 {
+		t.Errorf("pendingInputs() = %v (err=%v), want empty once answered", got, err)
 	}
+}
+
+// pendingInputs 是 Pending().Inputs 的测试简写。
+func (c *Chat) pendingInputs(ctx context.Context, userId string) ([]*RequestInput, error) {
+	pending, err := c.Pending(ctx, userId)
+	if err != nil {
+		return nil, err
+	}
+	return pending.Inputs, nil
 }
 
 // mustReply 发起一次回答并返回事件流里的第一个错误。
