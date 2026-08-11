@@ -168,6 +168,21 @@ func (s *Session) GetOrCreate(ctx context.Context, userId string, eventNum int) 
 	return resp.Session, nil
 }
 
+// ResetAutomatic deletes today's deterministic automatic session. The next
+// GetOrCreate starts with a clean workflow state and conversation history.
+// Automatic sessions have no conversation metadata, so they must be deleted
+// directly from the ADK service rather than through Delete.
+func (s *Session) ResetAutomatic(ctx context.Context, userId string) error {
+	if len(userId) == 0 || utf8.RuneCountInString(userId) > maxUserIDRunes {
+		return ErrInvalidUserID
+	}
+	return s.service.Delete(ctx, &session.DeleteRequest{
+		AppName:   s.name,
+		UserID:    userId,
+		SessionID: autoConversationID(s.name, userId),
+	})
+}
+
 // autoConversationID 由应用、用户和本地时区的自然日派生，跨自然日自动轮换到新会话。
 func autoConversationID(appName, userId string) string {
 	today := time.Now().In(time.Local).Format(time.DateOnly)

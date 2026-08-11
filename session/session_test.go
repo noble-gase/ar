@@ -207,6 +207,33 @@ func TestGetOrCreateReusesPerUser(t *testing.T) {
 	}
 }
 
+func TestResetAutomaticRecreatesCleanSession(t *testing.T) {
+	ctx := context.Background()
+	manager := newTestManager(t)
+
+	first, err := manager.GetOrCreate(ctx, "user-1", 1)
+	if err != nil {
+		t.Fatalf("GetOrCreate() error = %v", err)
+	}
+	if err := first.State().Set("waiting", true); err != nil {
+		t.Fatalf("State().Set() error = %v", err)
+	}
+
+	if err := manager.ResetAutomatic(ctx, "user-1"); err != nil {
+		t.Fatalf("ResetAutomatic() error = %v", err)
+	}
+	second, err := manager.GetOrCreate(ctx, "user-1", 1)
+	if err != nil {
+		t.Fatalf("GetOrCreate() after reset error = %v", err)
+	}
+	if second.ID() != first.ID() {
+		t.Fatalf("recreated ID = %q, want deterministic ID %q", second.ID(), first.ID())
+	}
+	if _, err := second.State().Get("waiting"); err == nil {
+		t.Fatal("recreated automatic session retained old workflow state")
+	}
+}
+
 func TestGetOrCreateCreatesOnceConcurrently(t *testing.T) {
 	ctx := context.Background()
 	manager := newTestManager(t)

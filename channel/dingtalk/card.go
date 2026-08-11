@@ -41,6 +41,11 @@ type CardSender struct {
 	card  *dingcard.Client
 	reduc redis.UniversalClient
 
+	// lock*Override 仅用于测试提速，为零时用 default* 常量。
+	lockTTLOverride   time.Duration
+	lockRenewOverride time.Duration
+	lockRetryOverride time.Duration
+
 	done      chan struct{}
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -57,13 +62,11 @@ func (s *CardSender) Close() {
 
 // deliver creates and delivers a card and returns its outTrackId. spaceType is
 // either "IM_ROBOT" (single chat) or "IM_GROUP" (group chat, groupConvId set).
-func (s *CardSender) deliver(ctx context.Context, templateId, spaceType, userId, groupConvId string, params map[string]string) (string, error) {
+func (s *CardSender) deliver(ctx context.Context, outTrackId, templateId, spaceType, userId, groupConvId string, params map[string]string) (string, error) {
 	accessToken, err := s.loadAccessToken(ctx)
 	if err != nil {
 		return "", err
 	}
-
-	outTrackId := uuid.New().String()
 
 	req := &dingcard.CreateAndDeliverRequest{
 		CallbackType: new("STREAM"),
@@ -111,23 +114,29 @@ func (s *CardSender) deliver(ctx context.Context, templateId, spaceType, userId,
 // CreateAndDeliverRobot 投放「机器人单聊」卡片，返回 outTrackId。
 // 卡片正文是流式变量，创建时不设初值（会被忽略），由调用方 StreamingUpdate 推送。
 func (s *CardSender) CreateAndDeliverRobot(ctx context.Context, userId string) (string, error) {
-	return s.deliver(ctx, s.templateId, "IM_ROBOT", userId, "", nil)
+	return s.deliver(ctx, uuid.New().String(), s.templateId, "IM_ROBOT", userId, "", nil)
 }
 
 // CreateAndDeliverGroup 投放「群聊」卡片，返回 outTrackId。
 // 卡片正文是流式变量，创建时不设初值（会被忽略），由调用方 StreamingUpdate 推送。
 func (s *CardSender) CreateAndDeliverGroup(ctx context.Context, userId, conversationId string) (string, error) {
-	return s.deliver(ctx, s.templateId, "IM_GROUP", userId, conversationId, nil)
+	return s.deliver(ctx, uuid.New().String(), s.templateId, "IM_GROUP", userId, conversationId, nil)
 }
 
-// DeliverConfirm 投放「确认」卡片（带同意/拒绝按钮），返回 outTrackId
-func (s *CardSender) DeliverConfirm(ctx context.Context, meta msgMeta, content string) (string, error) {
+// NewOutTrackId 预生成卡片 ID，让确认状态可以先落库再投卡：反过来的话，
+// 投卡成功而落库失败会留下一张点了没反应的卡片。
+func (s *CardSender) NewOutTrackId() string {
+	return uuid.New().String()
+}
+
+// DeliverConfirm 用指定的 outTrackId 投放「确认」卡片（带同意/拒绝按钮）。
+func (s *CardSender) DeliverConfirm(ctx context.Context, outTrackId string, meta msgMeta, content string) (string, error) {
 	params := map[string]string{"content": content}
 
 	if meta.convType == "2" { // 群聊
-		return s.deliver(ctx, s.confirmTemplateId, "IM_GROUP", meta.userId, meta.groupConvId, params)
+		return s.deliver(ctx, outTrackId, s.confirmTemplateId, "IM_GROUP", meta.userId, meta.groupConvId, params)
 	}
-	return s.deliver(ctx, s.confirmTemplateId, "IM_ROBOT", meta.userId, "", params)
+	return s.deliver(ctx, outTrackId, s.confirmTemplateId, "IM_ROBOT", meta.userId, "", params)
 }
 
 // StreamingUpdate 流式更新卡片内容（全量覆盖）
@@ -167,66 +176,6 @@ func (s *CardSender) loadAccessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return gjson.Get(str, "token").String(), nil
-}
-
-// pendingConfirm is the persisted state for an in-flight tool confirmation,
-// keyed by the confirmation card's outTrackId.
-type pendingConfirm struct {
-	CallId      string `json:"call_id"`
-	UserId      string `json:"user_id"`
-	ConvType    string `json:"conv_type"`
-	GroupConvId string `json:"group_conv_id"`
-}
-
-func (s *CardSender) pendingKey(outTrackId string) string {
-	return fmt.Sprintf("adk:confirm:dingtalk:%s:%s", s.clientId, outTrackId)
-}
-
-// savePending stores a pending confirmation for up to one hour.
-func (s *CardSender) savePending(ctx context.Context, outTrackId string, p *pendingConfirm) error {
-	b, err := json.Marshal(p)
-	if err != nil {
-		return err
-	}
-	return s.reduc.Set(ctx, s.pendingKey(outTrackId), string(b), time.Hour).Err()
-}
-
-// loadPending loads a pending confirmation by the confirmation card outTrackId.
-func (s *CardSender) loadPending(ctx context.Context, outTrackId string) (*pendingConfirm, error) {
-	str, err := s.reduc.Get(ctx, s.pendingKey(outTrackId)).Result()
-	if err != nil {
-		return nil, err
-	}
-	var p pendingConfirm
-	if err := json.Unmarshal([]byte(str), &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
-
-// getDelScript atomically returns and deletes a key. It replaces the native
-// GETDEL command, which is only available since Redis 6.2; using EVAL keeps
-// compatibility with older Redis servers while preserving atomicity.
-var script = redis.NewScript(`
-local v = redis.call('GET', KEYS[1])
-if v then
-	redis.call('DEL', KEYS[1])
-end
-return v
-`)
-
-// consumePending atomically returns and removes a pending confirmation, so
-// concurrent callbacks cannot resume the same tool call more than once.
-func (s *CardSender) consumePending(ctx context.Context, outTrackId string) (*pendingConfirm, error) {
-	str, err := script.Run(ctx, s.reduc, []string{s.pendingKey(outTrackId)}).Text()
-	if err != nil {
-		return nil, err
-	}
-	var pc pendingConfirm
-	if err := json.Unmarshal([]byte(str), &pc); err != nil {
-		return nil, err
-	}
-	return &pc, nil
 }
 
 func (s *CardSender) refreshAccessToken(ctx context.Context) {

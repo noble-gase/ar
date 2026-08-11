@@ -243,6 +243,104 @@ root := &llmchat.SequentialAgent{
 
 > **人工确认限制**：workflow 的 `Run` 每次都从头迭代子 Agent，没有暂停点续跑机制。确认事件虽能冒泡出卡片，但恢复时会从第一个子 Agent 重新执行，中间步骤需要确认时前置步骤会被重复执行。`ParallelAgent` 下并发产生的多个确认更无法可靠路由。**需要稳定 HITL 的工具请放在单个 `NormalAgent` 上。**
 
+### GraphAgent（图工作流）
+
+`GraphAgent` 支持条件分支、扇出与扇入（`workflow.JoinNode`）。运行状态持久化在 session 中，节点可以暂停并在后续轮次凭 `InterruptID` 精确恢复，因此**不会像上面三种 workflow 那样重复执行前置节点**。
+
+边由 `Edges` 回调组装：Agent 节点用 `g.Agent`（模型在此注入，并自动登记为 SubAgent 以便 runner 解析事件作者），其余节点直接用 ADK 原生的 `workflow.NewFunctionNode` / `NewEmittingFunctionNode` / `NewJoinNode`，再用 `workflow.Chain` / `workflow.Concat` / `workflow.NewEdgeBuilder` 连边。
+
+下面是一个「起草 → 人工审核 → 并行润色 → 汇总发布」的完整例子，覆盖条件分支、退回重写的环、扇出与扇入：
+
+```
+   START → draft → review → route ─┬─ "approved" ─→ polish ─┬→ gather → publish
+                     ↑             │               seo    ──┘
+                     │             └─ "rejected" ─→ draft
+```
+
+```go
+root := &llmchat.GraphAgent{
+	Name:        "article",
+	Description: "起草、人工审核、并行润色后汇总发布",
+	Edges: func(g *llmchat.Graph) []workflow.Edge {
+		// Agent 节点：模型由 GraphAgent 注入，节点名即 Agent 名
+		draft := g.Agent(&llmchat.NormalAgent{
+			Name:        "draft",
+			Instruction: "根据用户需求写一篇初稿",
+		}, workflow.NodeConfig{})
+
+		// HITL 节点：发出 RequestInput 后返回 ErrNodeInterrupted 暂停整个图，
+		// 用户下一轮的回复会作为后继节点（route）的输入送进来
+		review := workflow.NewEmittingFunctionNode[any, any]("review",
+			func(ctx agent.Context, _ any, emit func(*session.Event) error) (any, error) {
+				err := emit(workflow.NewRequestInputEvent(ctx, session.RequestInput{
+					// InterruptID 必须每次唯一，否则新一轮的提问会被当成已回答
+					InterruptID: "review-" + uuid.NewString(),
+					Message:     "初稿已生成，回复 approved 发布，其他内容退回重写",
+				}))
+				if err != nil {
+					return nil, err
+				}
+				return nil, workflow.ErrNodeInterrupted
+			},
+			workflow.NodeConfig{},
+		)
+
+		// 路由节点：把人工回复翻译成路由标记。Routes 决定走哪条边，
+		// Output 决定传给后继节点的输入
+		route := workflow.NewEmittingFunctionNode[string, any]("route",
+			func(ctx agent.Context, reply string, emit func(*session.Event) error) (any, error) {
+				ev := session.NewEvent(ctx, ctx.InvocationID())
+				if strings.TrimSpace(reply) == "approved" {
+					ev.Routes = []string{"approved"}
+				} else {
+					ev.Routes = []string{"rejected"}
+				}
+				ev.Output = reply
+				return nil, emit(ev)
+			},
+			workflow.NodeConfig{},
+		)
+
+		polish := g.Agent(&llmchat.NormalAgent{
+			Name:        "polish",
+			Instruction: "润色文字表达",
+		}, workflow.NodeConfig{})
+		seo := g.Agent(&llmchat.NormalAgent{
+			Name:        "seo",
+			Instruction: "补充 SEO 关键词",
+		}, workflow.NodeConfig{})
+
+		// 扇入屏障：等齐所有前驱后，输出 map[前驱节点名]该节点输出
+		gather := workflow.NewJoinNode("gather")
+
+		publish := workflow.NewFunctionNode("publish",
+			func(_ agent.Context, parts map[string]any) (string, error) {
+				return fmt.Sprintf("%v\n\n%v", parts["polish"], parts["seo"]), nil
+			},
+			workflow.NodeConfig{},
+		)
+
+		eb := workflow.NewEdgeBuilder()
+		eb.AddRoute(route, polish, workflow.StringRoute("approved"))
+		eb.AddRoute(route, seo, workflow.StringRoute("approved"))
+		eb.AddRoute(route, draft, workflow.StringRoute("rejected"))
+		eb.AddFanIn(gather, polish, seo)
+		eb.Add(gather, publish)
+
+		return workflow.Concat(
+			workflow.Chain(workflow.Start, draft, review, route),
+			eb.Build(),
+		)
+	},
+}
+```
+
+几个连边规则：
+
+- **环必须带条件**：`route → draft` 这条退回边带了 `StringRoute("rejected")`，无条件环会被 `ErrUnconditionalCycle` 拒绝
+- **扇入边必须无条件**：`JoinNode` 会等齐所有声明的前驱，被路由跳过的前驱永远不会触发，所以 `AddFanIn` 的入边不能带 `Route`；扇出到 `polish`/`seo` 的两条边用同一个 route，保证要么都激活要么都不激活
+- **非 `JoinNode` 的扇入尚不支持**（`ErrUnsupportedFanIn`），多前驱汇聚一律走 `JoinNode`
+
 ## 人工确认（HITL）
 
 每个工具来源都可以独立配置确认策略：
@@ -300,16 +398,62 @@ cfg := &dingtalk.Config{
 }
 ```
 
+### 人工输入（图工作流）
+
+`GraphAgent` 的节点用 `workflow.NewRequestInputEvent` + `ErrNodeInterrupted` 暂停时，走的是另一条通道：确认是「同意/拒绝」，人工输入是「自由文本回答」。用 `llmchat.RequestInputOf` 识别，用 `Reply` / `ReplyConversation` 恢复：
+
+```go
+for event, err := range events {
+	if err != nil {
+		return err
+	}
+	if in, ok := llmchat.RequestInputOf(event); ok {
+		// in.InterruptId / in.Message / in.Payload / in.ResponseSchema
+		// 把 in.Message 展示给用户，拿到回答后送回图中，回答会作为暂停节点的后继节点输入。
+		// 节点声明了 ResponseSchema 时用 ReplyPayload 把文本转成结构化数据
+		payload := llmchat.ReplyPayload(answer, in.ResponseSchema)
+		resumed, err := chat.ReplyConversation(ctx, userId, conversationId, in.InterruptId, payload)
+		_, _ = resumed, err
+		continue
+	}
+}
+```
+
+回答不符合 `ResponseSchema` 时节点会保持 waiting，`llmchat.IsRejectedReply(err)` 可以识别这种情况并让用户重答。
+
+钉钉渠道已内置，无需额外配置卡片模板：
+
+- 节点提问写回当前卡片，用户的**下一条聊天消息**即作为回答送回图中
+- 扇出会让多个节点同一轮暂停，此时按发起顺序逐个提问，一条消息回答一个，卡片提示还剩几个
+- 节点要求结构化回答时，卡片会附上 schema 并提示以 JSON 回复；回答不合要求时同一个问题会被再问一次
+- 回复 `/cancel` 或 `取消` 可放弃全部待回答问题（会重置当前自动会话），关键词通过 `dingtalk.Config.CancelKeywords` 自定义
+
+> **状态一致性**：待回答问题**只存在于 ADK 会话中**，渠道侧不维护任何副本——每轮消息都用 `Chat.PendingInputs` 从会话历史重建。因此不存在缓存过期、队列与会话不一致的问题。会话状态读取失败时会提示稍后重试，而不会把回答误当成新提问、也不会显示成流程已结束。
+>
+> **多实例部署**：聊天消息与确认卡片回调都经同一把 Redis 分布式锁串行化（按用户加锁、持锁期间自动续期、只释放自己持有的锁），不会出现两个 runner 并发驱动同一会话。Redis 在这里只保存两样东西：确认卡片的 `outTrackId → callId` 映射，以及这把用户锁。
+
 ## 会话
 
 ### 自动会话
 
 钉钉等不管理对话 ID 的渠道使用 `Ask` / `Confirm`。会话 ID 由（应用, 用户, 自然日）确定性派生，跨自然日自动轮转到新会话（日界按服务器本地时区 `time.Local` 计算）。并发调用与崩溃重试会天然收敛到同一个会话。
 
+`Ask` / `Reply` 会返回本次运行所在的会话。需要把状态存到进程外（例如一张等待点击的确认卡片）时必须记下它，之后原样传回 `Confirm`——不要在恢复时重新解析。会话已轮转时 `Confirm` 返回 `ErrConversationChanged`，避免去恢复一次早已被放弃的执行：
+
 ```go
-events, err := chat.Ask(ctx, userId, text)
-events, err = chat.Confirm(ctx, userId, callId, true, nil)
+conversationId, events, err := chat.Ask(ctx, userId, text)
+
+// 用户点击确认按钮后，带上当初那个会话
+events, err = chat.Confirm(ctx, userId, conversationId, callId, true, nil)
+if errors.Is(err, llmchat.ErrConversationChanged) {
+    // 已经跨日，这次确认不再可恢复，提示用户重新发起
+}
+if errors.Is(err, llmchat.ErrAlreadyConfirmed) {
+    // 重复点击，工具不会被执行第二次
+}
 ```
+
+> 会话 ID 只能识别跨日轮转。当天调用 `ResetAutomatic` 会重建出同一个确定性 ID，那种情况要靠渠道侧主动作废旧卡片（钉钉实现中的 `clearConfirms`）。
 
 ### 显式会话
 
