@@ -41,10 +41,12 @@ type CardSender struct {
 	card  *dingcard.Client
 	reduc redis.UniversalClient
 
-	// lock*Override 仅用于测试提速，为零时用 default* 常量。
+	// lock*Override 为零时用 default* 常量。TTL/Renew/Retry 仅用于测试提速，
+	// Wait 还承接 Config.LockWait。
 	lockTTLOverride   time.Duration
 	lockRenewOverride time.Duration
 	lockRetryOverride time.Duration
+	lockWaitOverride  time.Duration
 
 	done      chan struct{}
 	cancel    context.CancelFunc
@@ -255,6 +257,8 @@ func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 
 		lockKey:  fmt.Sprintf("adk:mutex:dingtalk:%s", cfg.ClientId),
 		tokenKey: fmt.Sprintf("adk:access_token:dingtalk:%s", cfg.ClientId),
+
+		lockWaitOverride: cfg.LockWait,
 
 		card:  client,
 		reduc: uc,

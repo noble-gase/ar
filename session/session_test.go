@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	adksession "google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/session/database"
+	"google.golang.org/genai"
 	"gorm.io/driver/sqlite"
 )
 
@@ -128,6 +130,66 @@ func TestRenameConversation(t *testing.T) {
 		ctx, "user-1", "conversation-1", strings.Repeat("x", maxTitleRunes+1),
 	); !errors.Is(err, ErrTitleTooLong) {
 		t.Fatalf("RenameConversation(long title) error = %v, want ErrTitleTooLong", err)
+	}
+}
+
+// ThoughtSignature 必须在会话持久化中原样存活：Anthropic 扩展思考的往返依赖
+// 签名随事件存进 DB、下一轮取出还原成 thinking 块。签名在存储层被丢掉的话，
+// 带工具调用的第二轮请求会被 API 拒绝，且现象与完全不支持思考时一模一样，
+// 所以这里用真实的 database service（而不是 InMemory）覆盖 JSON 序列化往返。
+func TestThoughtSignatureSurvivesPersistence(t *testing.T) {
+	ctx := context.Background()
+
+	dialector := sqlite.Open("file:" + t.Name() + "?mode=memory&cache=shared&_busy_timeout=5000")
+	service, err := database.NewSessionService(dialector, gormConfig())
+	if err != nil {
+		t.Fatalf("NewSessionService() error = %v", err)
+	}
+	if err := database.AutoMigrate(service); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+
+	created, err := service.Create(ctx, &adksession.CreateRequest{
+		AppName: "app", UserID: "user-1", SessionID: "conversation-1",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	event := &adksession.Event{Author: "model", InvocationID: "invocation-1"}
+	event.Content = &genai.Content{
+		Role: "model",
+		Parts: []*genai.Part{
+			{Text: "let me think", Thought: true, ThoughtSignature: []byte("sig-bytes")},
+			{Text: "the answer"},
+		},
+	}
+	if err := service.AppendEvent(ctx, created.Session, event); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+
+	got, err := service.Get(ctx, &adksession.GetRequest{
+		AppName: "app", UserID: "user-1", SessionID: "conversation-1",
+	})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	events := got.Session.Events()
+	if events.Len() != 1 {
+		t.Fatalf("events.Len() = %d, want 1", events.Len())
+	}
+	parts := events.At(0).Content.Parts
+	if len(parts) != 2 {
+		t.Fatalf("len(parts) = %d, want 2", len(parts))
+	}
+	if !parts[0].Thought || parts[0].Text != "let me think" {
+		t.Errorf("parts[0] = %+v, want the thought part intact", parts[0])
+	}
+	if string(parts[0].ThoughtSignature) != "sig-bytes" {
+		t.Errorf("ThoughtSignature = %q, want the signature to survive persistence", parts[0].ThoughtSignature)
+	}
+	if parts[1].Thought || parts[1].Text != "the answer" {
+		t.Errorf("parts[1] = %+v, want the plain text part", parts[1])
 	}
 }
 

@@ -25,6 +25,11 @@ var ErrNoContentInResponse = errors.New("no content in Anthropic response")
 // anthropicToolIdPattern 匹配合法的 Anthropic tool_use ID：^[a-zA-Z0-9_-]+$
 var anthropicToolIdPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// redactedThinkingMarker 在 ThoughtSignature 里区分 redacted_thinking 与普通
+// thinking。genai.Part 没有承载 redacted 数据的专门字段，只能借 ThoughtSignature
+// 存放加密数据，回传历史时按这个前缀还原成 redacted_thinking 块。
+const redactedThinkingMarker = "redacted_thinking:"
+
 // anthropicModel 用官方 Anthropic Go SDK 实现 model.LLM。
 type anthropicModel struct {
 	client            *anthropic.Client
@@ -55,7 +60,10 @@ type Config struct {
 	// 能花在内部推理上的输出 token 数。
 	// 思考 token 属于输出 token——Claude 就是把推理当文本生成出来的，
 	// 只是不展示给用户（或放在单独的块里返回）。
-	// 必须 >= 1024，且严格小于 MaxOutputTokens。
+	// 必须 >= 1024，且严格小于 MaxOutputTokens（含请求级覆盖），
+	// 违反时请求会在发出前报错。
+	// 开启后 temperature/top_p 会被忽略（Anthropic 强制 temperature 为 1），
+	// 思考内容以 Thought Part 返回，并在回传历史时连同签名原样带回。
 	// 为零时关闭扩展思考。
 	ThinkBudgetTokens int
 	// HTTPOptions 是可选的 HTTP 层覆盖配置（如附加请求头）。
@@ -150,21 +158,28 @@ func (m *anthropicModel) generateStream(ctx context.Context, req *model.LLMReque
 				return
 			}
 
-			// 产出增量文本
+			// 产出增量文本，思考增量同样实时产出，由下游按 Thought 过滤或展示
 			switch eventVariant := event.AsAny().(type) {
 			case anthropic.ContentBlockDeltaEvent:
+				var part *genai.Part
 				switch deltaVariant := eventVariant.Delta.AsAny().(type) {
 				case anthropic.TextDelta:
 					if deltaVariant.Text != "" {
-						part := &genai.Part{Text: deltaVariant.Text}
-						llmResp := &model.LLMResponse{
-							Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{part}},
-							Partial:      true,
-							TurnComplete: false,
-						}
-						if !yield(llmResp, nil) {
-							return
-						}
+						part = &genai.Part{Text: deltaVariant.Text}
+					}
+				case anthropic.ThinkingDelta:
+					if deltaVariant.Thinking != "" {
+						part = &genai.Part{Text: deltaVariant.Thinking, Thought: true}
+					}
+				}
+				if part != nil {
+					llmResp := &model.LLMResponse{
+						Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{part}},
+						Partial:      true,
+						TurnComplete: false,
+					}
+					if !yield(llmResp, nil) {
+						return
 					}
 				}
 			}
@@ -205,6 +220,14 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 	}
 
 	if m.thinkBudgetTokens > 0 {
+		// Anthropic 要求思考预算 >= 1024 且严格小于 max_tokens。配置错误在这里
+		// 尽早报出清晰的错误，而不是让 API 返回一个含糊的 400。
+		if m.thinkBudgetTokens < 1024 {
+			return anthropic.MessageNewParams{}, fmt.Errorf("anthropic: ThinkBudgetTokens must be >= 1024, got %d", m.thinkBudgetTokens)
+		}
+		if int64(m.thinkBudgetTokens) >= maxTokens {
+			return anthropic.MessageNewParams{}, fmt.Errorf("anthropic: ThinkBudgetTokens (%d) must be less than max output tokens (%d)", m.thinkBudgetTokens, maxTokens)
+		}
 		params.Thinking = anthropic.ThinkingConfigParamUnion{
 			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
 				BudgetTokens: int64(m.thinkBudgetTokens),
@@ -243,11 +266,15 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 
 	// 应用配置项
 	if req.Config != nil {
-		if req.Config.Temperature != nil {
-			params.Temperature = anthropic.Float(float64(*req.Config.Temperature))
-		}
-		if req.Config.TopP != nil {
-			params.TopP = anthropic.Float(float64(*req.Config.TopP))
+		// 扩展思考开启时 Anthropic 强制 temperature 为 1，且不接受 top_p 调整，
+		// 传了会直接 400，所以这里静默忽略采样参数。
+		if m.thinkBudgetTokens == 0 {
+			if req.Config.Temperature != nil {
+				params.Temperature = anthropic.Float(float64(*req.Config.Temperature))
+			}
+			if req.Config.TopP != nil {
+				params.TopP = anthropic.Float(float64(*req.Config.TopP))
+			}
 		}
 		if len(req.Config.StopSequences) > 0 {
 			params.StopSequences = req.Config.StopSequences
@@ -277,6 +304,12 @@ func (m *anthropicModel) buildMessageParams(req *model.LLMRequest) (anthropic.Me
 		// 选择。
 		if req.Config.ToolConfig != nil && req.Config.ToolConfig.FunctionCallingConfig != nil {
 			fcc := req.Config.ToolConfig.FunctionCallingConfig
+			// Anthropic 规定扩展思考不能与强制工具调用（{type:"any"} 或
+			// {type:"tool"}）同用。与预算校验同理，在发请求前报清晰的错误；
+			// 静默降级成 auto 会让「必须调工具」的语义失效而调用方毫不知情。
+			if m.thinkBudgetTokens > 0 && fcc.Mode == genai.FunctionCallingConfigModeAny {
+				return anthropic.MessageNewParams{}, fmt.Errorf("anthropic: extended thinking (ThinkBudgetTokens > 0) is incompatible with forced tool use (FunctionCallingConfigModeAny)")
+			}
 			switch fcc.Mode {
 			case genai.FunctionCallingConfigModeAuto:
 				params.ToolChoice = anthropic.ToolChoiceUnionParam{
@@ -308,6 +341,19 @@ func (m *anthropicModel) convertContentToMessage(content *genai.Content) (*anthr
 	var blocks []anthropic.ContentBlockParamUnion
 
 	for _, part := range content.Parts {
+		// 思考内容绝不能作为可见文本回传。带签名的思考块在开启扩展思考时必须
+		// 原样回传（Anthropic 要求带 tool_use 的 assistant 消息保留 thinking 块，
+		// 否则 400）；关闭思考时 API 不接受 thinking 块，没有签名的思考（比如
+		// 其它模型产生的）无法伪造签名，两种情况都只能丢弃。
+		if part.Thought {
+			if m.thinkBudgetTokens > 0 {
+				if block, ok := thinkingBlockFromPart(part); ok {
+					blocks = append(blocks, block)
+				}
+			}
+			continue
+		}
+
 		if part.Text != "" {
 			blocks = append(blocks, anthropic.NewTextBlock(part.Text))
 		}
@@ -357,11 +403,23 @@ func (m *anthropicModel) convertResponse(resp *anthropic.Message) (*model.LLMRes
 		Parts: []*genai.Part{},
 	}
 
-	// 转换内容块
+	// 转换内容块。thinking 块必须连同签名一起保留：开启扩展思考后，带 tool_use
+	// 的 assistant 消息在回传历史时必须原样带回 thinking 块，否则 API 直接 400。
 	for _, block := range resp.Content {
 		switch variant := block.AsAny().(type) {
 		case anthropic.TextBlock:
 			content.Parts = append(content.Parts, &genai.Part{Text: variant.Text})
+		case anthropic.ThinkingBlock:
+			content.Parts = append(content.Parts, &genai.Part{
+				Text:             variant.Thinking,
+				Thought:          true,
+				ThoughtSignature: []byte(variant.Signature),
+			})
+		case anthropic.RedactedThinkingBlock:
+			content.Parts = append(content.Parts, &genai.Part{
+				Thought:          true,
+				ThoughtSignature: []byte(redactedThinkingMarker + variant.Data),
+			})
 		case anthropic.ToolUseBlock:
 			content.Parts = append(content.Parts, &genai.Part{
 				FunctionCall: &genai.FunctionCall{
@@ -525,6 +583,23 @@ func extractTextFromContent(content *genai.Content) string {
 		}
 	}
 	return strings.Join(texts, "\n")
+}
+
+// thinkingBlockFromPart 把带签名的思考 Part 还原成 thinking / redacted_thinking
+// 块。没有签名的思考无法通过 API 校验，返回 false 表示应当丢弃。
+func thinkingBlockFromPart(part *genai.Part) (anthropic.ContentBlockParamUnion, bool) {
+	if len(part.ThoughtSignature) == 0 {
+		return anthropic.ContentBlockParamUnion{}, false
+	}
+
+	sig := string(part.ThoughtSignature)
+	if data, ok := strings.CutPrefix(sig, redactedThinkingMarker); ok {
+		return anthropic.NewRedactedThinkingBlock(data), true
+	}
+	if part.Text == "" {
+		return anthropic.ContentBlockParamUnion{}, false
+	}
+	return anthropic.NewThinkingBlock(sig, part.Text), true
 }
 
 // sanitizeToolId 把非法的工具 ID（含 [a-zA-Z0-9_-] 之外的字符）换成基于 SHA256 的合法 ID。
@@ -725,9 +800,17 @@ func convertInlineDataToBlock(data *genai.Blob) (*anthropic.ContentBlockParamUni
 	}
 }
 
-// hasContent 判断消息是否至少有一个内容块。
+// hasContent 判断消息是否还有实质内容。只剩 thinking 块不算：思考描述的是同一
+// 条消息里的文本或 tool_use，那些都被剔除（如孤立 tool_use 被
+// repairMessageHistory 删掉）后，单独回传的思考轻则污染上下文，重则被 API
+// 拒绝——thinking-only 的消息落在末尾还会撞上「扩展思考不允许 prefill」。
 func hasContent(msg anthropic.MessageParam) bool {
-	return len(msg.Content) > 0
+	for _, block := range msg.Content {
+		if block.OfThinking == nil && block.OfRedactedThinking == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // lowercaseTypes 递归遍历 JSON schema map，把所有 "type" 字段转成小写，

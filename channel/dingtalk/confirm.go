@@ -244,6 +244,10 @@ func (b *Bot) resumeConfirmed(ctx context.Context, meta msgMeta, confirmTrackId 
 	if err != nil {
 		// 没拿到锁，什么都没做：记录原样保留，提示用户重新点击
 		slog.ErrorContext(ctx, "[dingtalk confirm] resume skipped: lock unavailable", slog.String("error", err.Error()), slog.String("outTrackId", confirmTrackId))
+		if errors.Is(err, errUserBusy) {
+			b.settle(ctx, confirmTrackId, "> ⏳ 上一条消息还在处理中，请等它完成后重新点击。")
+			return
+		}
 		b.settle(ctx, confirmTrackId, confirmRetryText)
 	}
 }

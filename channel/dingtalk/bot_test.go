@@ -524,6 +524,22 @@ func TestLockFailureStopsProcessing(t *testing.T) {
 	}
 }
 
+// 用户忙是正常排队，要如实告知「上一条还在处理」，不能按基础设施故障处理。
+func TestLockBusyShowsBusyMessage(t *testing.T) {
+	card, chat := newFakeCard(), &fakeChat{}
+	card.lockErr = errUserBusy
+	b := newTestBot(card, chat)
+
+	b.streamAnswer(context.Background(), meta, "在吗", "track")
+
+	if chat.askedText != "" {
+		t.Errorf("askedText = %q, want processing to stop while busy", chat.askedText)
+	}
+	if !strings.Contains(card.lastCard(), "还在处理中") {
+		t.Errorf("card = %q, want a busy notice", card.lastCard())
+	}
+}
+
 // 同一用户的并发消息必须串行进入 ADK。
 func TestSameUserMessagesAreSerialized(t *testing.T) {
 	card := newFakeCard()

@@ -394,6 +394,21 @@ func TestRetryOnOriginalCardWhenResumeNotStarted(t *testing.T) {
 	}
 }
 
+// 用户忙时确认同样原样保留，提示等上一条消息完成后重点，而不是按故障处理。
+func TestConfirmBusyPromptsRetryAfterCurrentRun(t *testing.T) {
+	b, cardStore, _ := confirmBot(t)
+	cardStore.lockErr = errUserBusy
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
+
+	if cardStore.pendingCount() != 1 {
+		t.Errorf("pendingCount = %d, want the confirmation preserved while busy", cardStore.pendingCount())
+	}
+	if !strings.Contains(cardStore.lastCard(), "还在处理中") {
+		t.Errorf("card = %q, want a busy notice", cardStore.lastCard())
+	}
+}
+
 // 拿不到用户锁时同样什么都没做，原卡片要能重试。
 func TestRetryOnOriginalCardWhenLockUnavailable(t *testing.T) {
 	b, cardStore, _ := confirmBot(t)

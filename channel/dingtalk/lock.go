@@ -20,7 +20,16 @@ const (
 
 	// defaultLockRetry 是抢锁失败后的重试间隔。
 	defaultLockRetry = 100 * time.Millisecond
+
+	// defaultLockWait 是等待上一条消息释放用户锁的时长上限。它必须远小于运行
+	// 超时（默认 1 小时）：上一条消息可能要跑几十分钟，让排队消息的卡片干等到
+	// 运行超时才提示「正忙」毫无意义，超过这个时长就该尽早告知用户稍后再试。
+	defaultLockWait = 30 * time.Second
 )
+
+// errUserBusy 表示等待用户锁超时：上一条消息仍在处理中。它是正常排队而不是
+// 故障，调用方应提示用户稍后重试，而不是按基础设施错误处理。
+var errUserBusy = errors.New("dingtalk: previous message still processing")
 
 // releaseUserLock 只删除自己持有的锁：持锁期间若因故障超时失效、锁已被他人接手，
 // 无条件 DEL 会把别人的锁删掉。
@@ -64,16 +73,28 @@ func (s *CardSender) lockRetry() time.Duration {
 	return defaultLockRetry
 }
 
+func (s *CardSender) lockWait() time.Duration {
+	if s.lockWaitOverride > 0 {
+		return s.lockWaitOverride
+	}
+	return defaultLockWait
+}
+
 // lockUser 跨实例串行化同一用户的消息处理：两条消息并发驱动同一个 ADK session
 // 会让事件交错、待回答状态互相覆盖。
 //
-// 阻塞直到抢到锁或 ctx 结束。返回的 context 在锁失去所有权时被取消——续期发现锁
-// 已被别人接手，或长时间续不上导致锁必然已过期——调用方据此中止，避免和新的持锁
-// 者并发写同一个会话。释放函数会停止续期并只删除自己持有的锁。
+// 阻塞直到抢到锁、等待超出 lockWait（返回 errUserBusy）或 ctx 结束。等待上限
+// 独立于 ctx 的运行超时：排队的消息应尽早得到「正忙」的答复，而不是陪着上一条
+// 消息跑完全程。返回的 context 在锁失去所有权时被取消——续期发现锁已被别人接手，
+// 或长时间续不上导致锁必然已过期——调用方据此中止，避免和新的持锁者并发写同一个
+// 会话。释放函数会停止续期并只删除自己持有的锁。
 func (s *CardSender) lockUser(ctx context.Context, userId string) (context.Context, func(), error) {
 	key := s.userLockKey(userId)
 	token := uuid.NewString()
 	ttl, renew, retry := s.lockTTL(), s.lockRenew(), s.lockRetry()
+
+	waitTimer := time.NewTimer(s.lockWait())
+	defer waitTimer.Stop()
 
 	for {
 		ok, err := s.reduc.SetNX(ctx, key, token, ttl).Result()
@@ -87,6 +108,8 @@ func (s *CardSender) lockUser(ctx context.Context, userId string) (context.Conte
 		select {
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
+		case <-waitTimer.C:
+			return nil, nil, errUserBusy
 		case <-time.After(retry):
 		}
 	}

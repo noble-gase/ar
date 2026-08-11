@@ -2,6 +2,7 @@ package dingtalk
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -171,6 +172,27 @@ func TestUserLockReleaseDoesNotDropOthers(t *testing.T) {
 	}
 	if got != "someone-else" {
 		t.Errorf("lock value = %q, want the new holder's lock left intact", got)
+	}
+}
+
+// 抢锁等待有独立上限：排队消息应尽早得到「正忙」的答复，而不是陪着上一条
+// 消息跑完整个运行超时（默认 1 小时）。
+func TestUserLockWaitTimesOutAsBusy(t *testing.T) {
+	s := newTestCardSender(t)
+	s.lockWaitOverride = 150 * time.Millisecond
+
+	_, release, err := s.lockUser(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("lockUser() error = %v", err)
+	}
+	defer release()
+
+	start := time.Now()
+	if _, _, err := s.lockUser(context.Background(), "u1"); !errors.Is(err, errUserBusy) {
+		t.Fatalf("lockUser() error = %v, want errUserBusy", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("lockUser() waited %v before reporting busy", elapsed)
 	}
 }
 
