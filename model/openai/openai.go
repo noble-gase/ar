@@ -308,25 +308,21 @@ func (m *openaiModel) applyGenerationConfig(params *openai.ChatCompletionNewPara
 
 	// 带 schema 的结构化输出
 	if cfg.ResponseSchema != nil {
-		if schemaMap, err := convertSchema(cfg.ResponseSchema); err == nil {
-			params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
-				OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
-					JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
-						Name:        "response",
-						Description: openai.String(cfg.ResponseSchema.Description),
-						Schema:      schemaMap,
-						Strict:      openai.Bool(true),
-					},
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
+				JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+					Name:        "response",
+					Description: openai.String(cfg.ResponseSchema.Description),
+					Schema:      convertSchema(cfg.ResponseSchema),
+					Strict:      openai.Bool(true),
 				},
-			}
+			},
 		}
 	}
 
 	// 工具
 	if len(cfg.Tools) > 0 {
-		if tools, err := m.convertTools(cfg.Tools); err == nil {
-			params.Tools = tools
-		}
+		params.Tools = m.convertTools(cfg.Tools)
 	}
 
 	// ToolConfig → tool_choice
@@ -519,7 +515,7 @@ func (m *openaiModel) convertResponse(resp *openai.ChatCompletion) (*model.LLMRe
 }
 
 // convertTools 把 genai 的工具定义转换成 OpenAI 的函数工具格式。
-func (m *openaiModel) convertTools(genaiTools []*genai.Tool) ([]openai.ChatCompletionToolUnionParam, error) {
+func (m *openaiModel) convertTools(genaiTools []*genai.Tool) []openai.ChatCompletionToolUnionParam {
 	var tools []openai.ChatCompletionToolUnionParam
 
 	for _, genaiTool := range genaiTools {
@@ -541,7 +537,7 @@ func (m *openaiModel) convertTools(genaiTools []*genai.Tool) ([]openai.ChatCompl
 		}
 	}
 
-	return tools, nil
+	return tools
 }
 
 // convertToFunctionParams 把各种参数类型转换成 OpenAI 的格式。
@@ -624,9 +620,9 @@ func lowercaseTypes(m map[string]any) {
 }
 
 // convertSchema 递归把 genai.Schema 转换成 OpenAI 的 JSON schema 格式。
-func convertSchema(schema *genai.Schema) (map[string]any, error) {
+func convertSchema(schema *genai.Schema) map[string]any {
 	if schema == nil {
-		return map[string]any{"type": "object", "properties": map[string]any{}}, nil
+		return map[string]any{"type": "object", "properties": map[string]any{}}
 	}
 
 	result := make(map[string]any)
@@ -647,24 +643,16 @@ func convertSchema(schema *genai.Schema) (map[string]any, error) {
 	if len(schema.Properties) > 0 {
 		props := make(map[string]any)
 		for name, propSchema := range schema.Properties {
-			converted, err := convertSchema(propSchema)
-			if err != nil {
-				return nil, err
-			}
-			props[name] = converted
+			props[name] = convertSchema(propSchema)
 		}
 		result["properties"] = props
 	}
 
 	if schema.Items != nil {
-		items, err := convertSchema(schema.Items)
-		if err != nil {
-			return nil, err
-		}
-		result["items"] = items
+		result["items"] = convertSchema(schema.Items)
 	}
 
-	return result, nil
+	return result
 }
 
 // normalizeToolCallId 用哈希把超过 OpenAI 40 字符上限的 ID 缩短，
