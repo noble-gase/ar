@@ -655,8 +655,9 @@ func convertSchema(schema *genai.Schema) map[string]any {
 	return result
 }
 
-// normalizeToolCallId 用哈希把超过 OpenAI 40 字符上限的 ID 缩短，
-// 映射会被保存下来以便需要时反查。
+// normalizeToolCallId 用哈希把超过 OpenAI 40 字符上限的 ID 缩短。
+// 不保存任何映射：哈希是确定性的，历史里 FunctionCall 与 FunctionResponse
+// 的同一个长 ID 总会归一成同一个短 ID，两侧天然对得上。
 func (m *openaiModel) normalizeToolCallId(id string) string {
 	if len(id) <= maxToolCallIdLength {
 		return id
