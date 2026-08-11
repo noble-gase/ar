@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
@@ -48,17 +47,12 @@ type CardSender struct {
 	lockRetryOverride time.Duration
 	lockWaitOverride  time.Duration
 
-	done      chan struct{}
-	cancel    context.CancelFunc
-	closeOnce sync.Once
+	cancel context.CancelFunc
 }
 
 // Close 停止后台刷新 access token 的 goroutine，可以安全地重复调用。
 func (s *CardSender) Close() {
-	s.closeOnce.Do(func() {
-		close(s.done)
-		s.cancel()
-	})
+	s.cancel()
 }
 
 // deliver 创建并投放一张卡片，返回它的 outTrackId。spaceType 取 "IM_ROBOT"
@@ -262,8 +256,6 @@ func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 
 		card:  client,
 		reduc: uc,
-
-		done: make(chan struct{}),
 	}
 
 	initCtx, initCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -282,7 +274,7 @@ func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 		defer ticker.Stop()
 		for {
 			select {
-			case <-s.done:
+			case <-refreshCtx.Done():
 				return
 			case <-ticker.C:
 				s.refreshAccessToken(refreshCtx)
