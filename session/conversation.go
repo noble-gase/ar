@@ -45,28 +45,8 @@ type ConversationPage struct {
 	NextCursor string         `json:"nextCursor,omitempty"`
 }
 
-type ConversationRepository interface {
-	Create(ctx context.Context, conversation *Conversation) error
-	Get(ctx context.Context, appName, userID, conversationID string) (*Conversation, error)
-	Touch(ctx context.Context, appName, userID, conversationID string, now time.Time) error
-	Rename(ctx context.Context, appName, userID, conversationID, title string) error
-	List(ctx context.Context, appName, userID, cursor string, limit int) (*ConversationPage, error)
-	Delete(ctx context.Context, appName, userID, conversationID string) error
-}
-
 type conversationRepository struct {
 	db *gorm.DB
-}
-
-func NewConversationRepository(dialector gorm.Dialector, opts ...gorm.Option) (ConversationRepository, error) {
-	db, err := gorm.Open(dialector, opts...)
-	if err != nil {
-		return nil, err
-	}
-	if err := db.AutoMigrate(&Conversation{}); err != nil {
-		return nil, fmt.Errorf("migrate conversation metadata: %w", err)
-	}
-	return &conversationRepository{db: db}, nil
 }
 
 func (r *conversationRepository) Get(ctx context.Context, appName, userID, conversationID string) (*Conversation, error) {

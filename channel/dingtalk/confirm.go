@@ -210,8 +210,8 @@ func (b *Bot) resumeConfirmed(ctx context.Context, meta msgMeta, confirmTrackId 
 			return
 		}
 		if errors.Is(err, llmchat.ErrConfirmationNotFound) {
-			// 同日 ResetAutomatic 会复用相同的确定性 session ID；此时只有会话历史
-			// 能判断旧 callId 已不存在。把它当成失效入口，而不是邀请用户反复重试。
+			// 会话匹配但历史里查无此确认，属于防御性兜底（重置和跨日都由
+			// ErrConversationChanged 拦截）。把它当成失效入口，而不是邀请用户反复重试。
 			slog.InfoContext(ctx, "[dingtalk confirm] confirmation no longer pending", slog.String("outTrackId", confirmTrackId), slog.String("callId", pending.CallId))
 			b.dropConfirm(ctx, confirmTrackId, meta.userId)
 			b.settle(ctx, outTrackId, staleConfirmText)

@@ -454,7 +454,7 @@ for event, err := range events {
 
 ### 自动会话
 
-钉钉等不管理对话 ID 的渠道使用 `Ask` / `Confirm`。会话 ID 由（应用, 用户, 自然日）确定性派生，跨自然日自动轮转到新会话（日界按服务器本地时区 `time.Local` 计算）。并发调用与崩溃重试会天然收敛到同一个会话。
+钉钉等不管理对话 ID 的渠道使用 `Ask` / `Confirm`。每个用户有一条「当前会话」指针记录，跨自然日自动轮换到新会话；轮换是单调的（只向日期更大的方向轮换），时区配置不一致或时钟回拨不会让实例间互相踩踏。日界时区默认 `time.Local`，多实例部署必须通过 `session.WithLocation` 显式统一。并发调用与崩溃重试通过指针表的条件写收敛到同一个会话。`ResetAutomatic` 把指针换成全新 ID 并尽力删除旧会话（删除失败只留下无法寻址的孤儿，不影响正确性）。
 
 `Ask` / `Reply` 会返回本次运行所在的会话。需要把状态存到进程外（例如一张等待点击的确认卡片）时必须记下它，之后原样传回 `Confirm`——不要在恢复时重新解析。`Confirm` 恢复前会核对会话与会话历史，三种失效各自有明确的错误：
 
@@ -465,15 +465,15 @@ conversationId, events, err := chat.Ask(ctx, userId, text)
 events, err = chat.Confirm(ctx, userId, conversationId, callId, true, nil)
 switch {
 case errors.Is(err, llmchat.ErrConversationChanged):
-    // 已经跨日，这次确认不再可恢复，提示用户重新发起
+    // 会话已轮换（跨日或被重置），这次确认不再可恢复，提示用户重新发起
 case errors.Is(err, llmchat.ErrAlreadyConfirmed):
     // 重复点击，工具不会被执行第二次
 case errors.Is(err, llmchat.ErrConfirmationNotFound):
-    // 会话被重置，这个 callId 已随历史一起消失
+    // 防御性兜底：会话匹配但历史里查无此确认（如调用方传错 callId）
 }
 ```
 
-> 判定依据始终是 ADK 会话，不是渠道侧的缓存：缓存清理失败不会造成重复执行。同日 `ResetAutomatic` 会重建出同一个确定性 ID，`ErrConversationChanged` 认不出来，由 `ErrConfirmationNotFound` 兜住。
+> 判定依据始终是 ADK 会话，不是渠道侧的缓存：缓存清理失败不会造成重复执行。跨日轮换与 `ResetAutomatic` 都会让指针指向全新的会话 ID，因此两种失效统一由 `ErrConversationChanged` 拦截。
 
 ### 显式会话
 

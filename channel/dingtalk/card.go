@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
@@ -14,7 +15,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/noble-gase/neon/helper"
 	"github.com/noble-gase/neon/httpkit"
-	"github.com/noble-gase/neon/redlock"
 	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
 )
@@ -22,6 +22,11 @@ import (
 type AccessToken struct {
 	Token     string `json:"token"`
 	ExpiredAt int64  `json:"expired_at"`
+}
+
+// fresh 判断 token 在余量 margin 下是否仍可用。
+func (at AccessToken) fresh(margin time.Duration) bool {
+	return at.Token != "" && at.ExpiredAt-time.Now().Unix() > int64(margin/time.Second)
 }
 
 type CardSender struct {
@@ -34,7 +39,6 @@ type CardSender struct {
 	// （"confirm_approve"/"confirm_reject"）上报决定。
 	confirmTemplateId string
 
-	lockKey  string
 	tokenKey string
 
 	card  *dingcard.Client
@@ -47,18 +51,21 @@ type CardSender struct {
 	lockRetryOverride time.Duration
 	lockWaitOverride  time.Duration
 
-	cancel context.CancelFunc
-}
+	// tokenMu 保护以下字段并串行化刷新：并发调用只有一个真的去请求钉钉，
+	// 其余等它写回缓存。
+	tokenMu        sync.Mutex
+	token          AccessToken
+	lastFetchErr   error
+	lastFetchErrAt time.Time
 
-// Close 停止后台刷新 access token 的 goroutine，可以安全地重复调用。
-func (s *CardSender) Close() {
-	s.cancel()
+	// fetchToken 由构造函数设为 fetchAccessToken，测试可覆盖成假实现。
+	fetchToken func(context.Context) (AccessToken, error)
 }
 
 // deliver 创建并投放一张卡片，返回它的 outTrackId。spaceType 取 "IM_ROBOT"
 // （单聊）或 "IM_GROUP"（群聊，需设置 groupConvId）。
 func (s *CardSender) deliver(ctx context.Context, outTrackId, templateId, spaceType, userId, groupConvId string, params map[string]string) (string, error) {
-	accessToken, err := s.loadAccessToken(ctx)
+	accessToken, err := s.accessToken(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -136,7 +143,7 @@ func (s *CardSender) DeliverConfirm(ctx context.Context, outTrackId string, meta
 
 // StreamingUpdate 流式更新卡片内容（全量覆盖）
 func (s *CardSender) StreamingUpdate(ctx context.Context, outTrackId, content string, finished bool) {
-	accessToken, err := s.loadAccessToken(ctx)
+	accessToken, err := s.accessToken(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "[dingtalk card] load access_token failed", slog.String("outTrackId", outTrackId), slog.String("error", err.Error()))
 		return
@@ -161,37 +168,100 @@ func (s *CardSender) StreamingUpdate(ctx context.Context, outTrackId, content st
 	}
 }
 
-func (s *CardSender) loadAccessToken(ctx context.Context) (string, error) {
+// tokenRefreshMargin 是提前刷新的余量：剩余有效期低于它时就地刷新，
+// 避免拿着临期 token 发卡失败。
+const tokenRefreshMargin = 10 * time.Minute
+
+// tokenIOTimeout 限制锁内外部调用（Redis 读写 + 直连钉钉）的总时长。
+// sync.Mutex 的等待者不响应各自 ctx 的取消，临界区必须自带上界：否则一次
+// 挂起的刷新会握着锁陪调用方的 ctx 走完（最长可达 Bot 的运行超时），
+// 把全进程的卡片投放和更新一起拖住。
+const tokenIOTimeout = 10 * time.Second
+
+// tokenRetryBackoff 是刷新失败后的静默期。端点挂起（而不是快速失败）时，每次
+// 试探都要在锁内把 tokenIOTimeout 走满，并发调用会排成 10 秒一个的队列——哪怕
+// 手里有可降级的旧 token。静默期内跳过全部 I/O，直接降级或复报上次的错误。
+const tokenRetryBackoff = 30 * time.Second
+
+// accessToken 按需返回可用的 access token：进程内缓存 → Redis（别的实例可能
+// 刚刷新过）→ 直连钉钉刷新。没有后台刷新协程，也就没有需要 Close 的生命周期。
+//
+// 整个获取过程持 tokenMu 串行化：并发调用只有一个真的去刷新，其余等它写回
+// 缓存；命中内存缓存时锁只握一瞬，未命中时锁内 I/O 由 tokenIOTimeout 封顶。
+// 钉钉的 token 端点在有效期内对并发请求返回同一 token，跨实例的偶发重复刷新
+// 无害，不需要分布式锁。
+func (s *CardSender) accessToken(ctx context.Context) (string, error) {
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
+
+	if s.token.fresh(tokenRefreshMargin) {
+		return s.token.Token, nil
+	}
+
+	// 刷新失败后的静默期内不再试探端点，见 tokenRetryBackoff
+	if s.lastFetchErr != nil && time.Since(s.lastFetchErrAt) < tokenRetryBackoff {
+		if s.token.fresh(0) {
+			return s.token.Token, nil
+		}
+		return "", s.lastFetchErr
+	}
+
+	// 与调用方的 ctx 解绑（只保留 trace 等值）并统一限时，见 tokenIOTimeout
+	ioCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenIOTimeout)
+	defer cancel()
+
+	// 临期但未过期的 Redis token 留作降级候选：刚启动的实例内存缓存为空，
+	// 刷新一旦失败它就是唯一还能用的凭据
+	var stale AccessToken
+	if at, err := s.redisToken(ioCtx); err == nil {
+		if at.fresh(tokenRefreshMargin) {
+			s.token = at
+			return at.Token, nil
+		}
+		stale = at
+	} else if !errors.Is(err, redis.Nil) {
+		// Redis 故障不中止：还有直连刷新兜底
+		slog.WarnContext(ctx, "[dingtalk card] redis get access_token failed", slog.String("error", err.Error()))
+	}
+
+	at, err := s.fetchToken(ioCtx)
+	if err != nil {
+		s.lastFetchErr, s.lastFetchErrAt = err, time.Now()
+		// 刷新失败时，还没真正过期的旧 token（内存或 Redis 里的）仍可降级使用
+		if !s.token.fresh(0) && stale.fresh(0) {
+			s.token = stale
+		}
+		if s.token.fresh(0) {
+			slog.WarnContext(ctx, "[dingtalk card] refresh failed, using cached access_token", slog.String("error", err.Error()))
+			return s.token.Token, nil
+		}
+		return "", err
+	}
+
+	s.lastFetchErr = nil
+	s.token = at
+	s.storeRedisToken(ioCtx, at)
+	return at.Token, nil
+}
+
+func (s *CardSender) redisToken(ctx context.Context) (AccessToken, error) {
 	if s.reduc == nil {
-		return "", errors.New("missing redis client")
+		return AccessToken{}, redis.Nil
 	}
 
 	str, err := s.reduc.Get(ctx, s.tokenKey).Result()
 	if err != nil {
-		return "", err
+		return AccessToken{}, err
 	}
-	return gjson.Get(str, "token").String(), nil
+	var at AccessToken
+	if err := json.Unmarshal([]byte(str), &at); err != nil {
+		return AccessToken{}, err
+	}
+	return at, nil
 }
 
-func (s *CardSender) refreshAccessToken(ctx context.Context) {
-	lock := redlock.New(s.reduc, s.lockKey, 10*time.Second)
-	if err := lock.Acquire(ctx); err != nil {
-		return
-	}
-	defer lock.Release(ctx)
-
-	str, err := s.reduc.Get(ctx, s.tokenKey).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		slog.ErrorContext(ctx, "[dingtalk card] redis get access_token failed", slog.String("key", s.tokenKey), slog.String("error", err.Error()))
-		return
-	}
-	if len(str) != 0 {
-		expiredAt := gjson.Get(str, "expired_at").Int()
-		if expiredAt-time.Now().Unix() > 600 {
-			return
-		}
-	}
-
+// fetchAccessToken 直连钉钉换取新 token。
+func (s *CardSender) fetchAccessToken(ctx context.Context) (AccessToken, error) {
 	resp, err := httpkit.Client().R().
 		SetContext(ctx).
 		SetBody(helper.X{
@@ -200,31 +270,41 @@ func (s *CardSender) refreshAccessToken(ctx context.Context) {
 		}).
 		Post("https://api.dingtalk.com/v1.0/oauth2/accessToken")
 	if err != nil {
-		slog.ErrorContext(ctx, "[dingtalk card] refresh access_token failed", slog.String("error", err.Error()))
-		return
+		return AccessToken{}, fmt.Errorf("refresh access token: %w", err)
 	}
-
-	slog.InfoContext(ctx, "[dingtalk card] refresh access_token", slog.String("response", resp.String()))
-
 	if !resp.IsSuccess() {
-		slog.ErrorContext(ctx, "[dingtalk card] refresh access_token failed", slog.String("error", resp.Status()))
-		return
+		return AccessToken{}, fmt.Errorf("refresh access token: %s", resp.Status())
 	}
 
 	ret := gjson.ParseBytes(resp.Body())
-	expireIn := ret.Get("expireIn").Int()
-	at := AccessToken{
-		Token:     ret.Get("accessToken").String(),
-		ExpiredAt: time.Now().Unix() + expireIn,
+	token := ret.Get("accessToken").String()
+	if token == "" {
+		return AccessToken{}, errors.New("refresh access token: empty accessToken in response")
 	}
-	b, _ := json.Marshal(at)
-	// 设置 TTL，避免刷新协程停止后旧 token 永久残留
-	ttl := time.Duration(expireIn) * time.Second
+	expireIn := ret.Get("expireIn").Int()
+	if expireIn <= 0 {
+		expireIn = 7200
+	}
+	return AccessToken{Token: token, ExpiredAt: time.Now().Unix() + expireIn}, nil
+}
+
+// storeRedisToken 把新 token 写回 Redis 供其它实例复用，失败只降级为各自刷新。
+func (s *CardSender) storeRedisToken(ctx context.Context, at AccessToken) {
+	if s.reduc == nil {
+		return
+	}
+
+	b, err := json.Marshal(at)
+	if err != nil {
+		return
+	}
+	// TTL 对齐真实有效期，token 不会以过期状态残留
+	ttl := time.Until(time.Unix(at.ExpiredAt, 0))
 	if ttl <= 0 {
-		ttl = 2 * time.Hour
+		return
 	}
 	if err := s.reduc.Set(ctx, s.tokenKey, string(b), ttl).Err(); err != nil {
-		slog.ErrorContext(ctx, "[dingtalk card] redis set access_token failed", slog.String("key", s.tokenKey), slog.String("value", string(b)), slog.String("error", err.Error()))
+		slog.WarnContext(ctx, "[dingtalk card] redis set access_token failed", slog.String("error", err.Error()))
 	}
 }
 
@@ -249,7 +329,6 @@ func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 
 		confirmTemplateId: confirmTemplateId,
 
-		lockKey:  fmt.Sprintf("adk:mutex:dingtalk:%s", cfg.ClientId),
 		tokenKey: fmt.Sprintf("adk:access_token:dingtalk:%s", cfg.ClientId),
 
 		lockWaitOverride: cfg.LockWait,
@@ -257,30 +336,13 @@ func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 		card:  client,
 		reduc: uc,
 	}
+	s.fetchToken = s.fetchAccessToken
 
-	initCtx, initCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer initCancel()
-
-	s.refreshAccessToken(initCtx)
-	if _, err = s.loadAccessToken(initCtx); err != nil {
+	// 启动时验证一次凭据，让配置错误在部署时暴露，而不是等第一条消息才失败。
+	// 时限由 accessToken 内部的 tokenIOTimeout 保证（它与外部 ctx 的期限解绑）。
+	if _, err := s.accessToken(context.Background()); err != nil {
 		return nil, fmt.Errorf("initialize DingTalk access token: %w", err)
 	}
-
-	refreshCtx, refreshCancel := context.WithCancel(context.Background())
-	s.cancel = refreshCancel
-
-	go func() {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-refreshCtx.Done():
-				return
-			case <-ticker.C:
-				s.refreshAccessToken(refreshCtx)
-			}
-		}
-	}()
 
 	return s, nil
 }

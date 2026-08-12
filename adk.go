@@ -14,8 +14,9 @@ func NewLLMAgent(builder llmchat.AgentBuilder) (agent.Agent, error) {
 	return builder.Build(nil)
 }
 
-// NewLLMChat 返回一个 LLM chat。
-func NewLLMChat(name string, db gorm.Dialector, builder llmchat.AgentBuilder) (*llmchat.Chat, error) {
+// NewLLMChat 返回一个 LLM chat。opts 透传给 session.New，多实例部署应通过
+// session.WithLocation 显式统一自动会话的轮换时区。
+func NewLLMChat(name string, db gorm.Dialector, builder llmchat.AgentBuilder, opts ...session.Option) (*llmchat.Chat, error) {
 	// Agent
 	agent, err := builder.Build(nil)
 	if err != nil {
@@ -23,7 +24,7 @@ func NewLLMChat(name string, db gorm.Dialector, builder llmchat.AgentBuilder) (*
 	}
 
 	// Session
-	session, err := session.New(name, db)
+	session, err := session.New(name, db, opts...)
 	if err != nil {
 		return nil, err
 	}

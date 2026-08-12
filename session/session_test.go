@@ -3,24 +3,40 @@ package session
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/session/database"
 	"google.golang.org/genai"
 	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func newTestManager(t *testing.T) *Session {
 	t.Helper()
 
-	repo, err := NewConversationRepository(sqlite.Open("file:" + t.Name() + "?mode=memory&cache=shared&_busy_timeout=5000"))
+	// 用临时文件 + WAL 而不是共享缓存内存库：并发写共享缓存库会报
+	// SQLITE_LOCKED（table is locked），它不受 busy_timeout 约束，
+	// 会让并发收敛类测试无谓地失败。
+	dsn := "file:" + filepath.Join(t.TempDir(), "session.db") + "?_busy_timeout=5000&_journal_mode=WAL"
+	db, err := gorm.Open(sqlite.Open(dsn), gormConfig())
 	if err != nil {
-		t.Fatalf("create conversation repository: %v", err)
+		t.Fatalf("open test db: %v", err)
 	}
-	return &Session{name: "test", service: adksession.InMemoryService(), convRepo: repo}
+	if err := db.AutoMigrate(&Conversation{}, &autoConversation{}); err != nil {
+		t.Fatalf("migrate test db: %v", err)
+	}
+	return &Session{
+		name:     "test",
+		service:  adksession.InMemoryService(),
+		convRepo: &conversationRepository{db: db},
+		autoRepo: &autoConversationRepository{db: db},
+		loc:      time.Local,
+	}
 }
 
 func TestExplicitConversations(t *testing.T) {
@@ -140,8 +156,8 @@ func TestRenameConversation(t *testing.T) {
 func TestThoughtSignatureSurvivesPersistence(t *testing.T) {
 	ctx := context.Background()
 
-	dialector := sqlite.Open("file:" + t.Name() + "?mode=memory&cache=shared&_busy_timeout=5000")
-	service, err := database.NewSessionService(dialector, gormConfig())
+	dsn := "file:" + filepath.Join(t.TempDir(), "thought.db") + "?_busy_timeout=5000&_journal_mode=WAL"
+	service, err := database.NewSessionService(sqlite.Open(dsn), gormConfig())
 	if err != nil {
 		t.Fatalf("NewSessionService() error = %v", err)
 	}
@@ -269,7 +285,9 @@ func TestGetOrCreateReusesPerUser(t *testing.T) {
 	}
 }
 
-func TestResetAutomaticRecreatesCleanSession(t *testing.T) {
+// 重置必须轮换到全新的会话 ID：旧卡片凭 ID 不匹配即可判定失效，不存在
+// 「同日重置后 ID 复用」的歧义；旧会话被尽力删除，不留无法寻址的孤儿。
+func TestResetAutomaticRotatesToFreshSession(t *testing.T) {
 	ctx := context.Background()
 	manager := newTestManager(t)
 
@@ -288,11 +306,45 @@ func TestResetAutomaticRecreatesCleanSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreate() after reset error = %v", err)
 	}
-	if second.ID() != first.ID() {
-		t.Fatalf("recreated ID = %q, want deterministic ID %q", second.ID(), first.ID())
+	if second.ID() == first.ID() {
+		t.Fatalf("recreated ID = %q, want a fresh conversation id", second.ID())
 	}
 	if _, err := second.State().Get("waiting"); err == nil {
-		t.Fatal("recreated automatic session retained old workflow state")
+		t.Fatal("fresh automatic session retained old workflow state")
+	}
+
+	// 旧会话随重置一起清理，不作为孤儿残留
+	if _, err := manager.service.Get(ctx, &adksession.GetRequest{
+		AppName: "test", UserID: "user-1", SessionID: first.ID(),
+	}); err == nil {
+		t.Fatal("old session should be deleted on reset")
+	}
+}
+
+// 删除旧会话失败只记日志：指针已经换掉，重置对调用方就是成功的，
+// 最坏只留下一个无法寻址的孤儿。
+func TestResetAutomaticSucceedsWhenOldSessionDeleteFails(t *testing.T) {
+	ctx := context.Background()
+	manager := newTestManager(t)
+	service := &failingSessionService{Service: manager.service}
+	manager.service = service
+
+	first, err := manager.GetOrCreate(ctx, "user-1", 1)
+	if err != nil {
+		t.Fatalf("GetOrCreate() error = %v", err)
+	}
+
+	service.deleteErr = errors.New("delete failed")
+	if err := manager.ResetAutomatic(ctx, "user-1"); err != nil {
+		t.Fatalf("ResetAutomatic() error = %v, want nil despite cleanup failure", err)
+	}
+
+	second, err := manager.GetOrCreate(ctx, "user-1", 1)
+	if err != nil {
+		t.Fatalf("GetOrCreate() after reset error = %v", err)
+	}
+	if second.ID() == first.ID() {
+		t.Fatal("pointer must rotate even when the old session cleanup fails")
 	}
 }
 
@@ -323,14 +375,78 @@ func TestGetOrCreateCreatesOnceConcurrently(t *testing.T) {
 	ready.Wait()
 	close(start)
 
-	want := autoConversationID("test", "user-1")
+	// 指针表的条件写保证并发调用者收敛到同一个会话
+	want := ""
 	for range callers {
 		if err := <-errs; err != nil {
 			t.Fatalf("GetOrCreate() error = %v", err)
 		}
-		if id := <-ids; id != want {
+		id := <-ids
+		if id == "" {
+			t.Fatal("GetOrCreate() returned an empty id")
+		}
+		if want == "" {
+			want = id
+			continue
+		}
+		if id != want {
 			t.Fatalf("concurrent id = %q, want %q", id, want)
 		}
+	}
+}
+
+// 指针的轮换规则：同日复用、跨日换新、换新后稳定。直接对指针存储测试，
+// 用显式的日期入参避免和真实时钟耦合。
+func TestAutoConversationPointerRotation(t *testing.T) {
+	ctx := context.Background()
+	repo := newTestManager(t).autoRepo
+
+	day1, err := repo.Current(ctx, "test", "u1", "2026-08-11")
+	if err != nil {
+		t.Fatalf("Current(day1) error = %v", err)
+	}
+	same, err := repo.Current(ctx, "test", "u1", "2026-08-11")
+	if err != nil {
+		t.Fatalf("Current(day1 again) error = %v", err)
+	}
+	if same != day1 {
+		t.Fatalf("same-day id = %q, want %q reused", same, day1)
+	}
+
+	day2, err := repo.Current(ctx, "test", "u1", "2026-08-12")
+	if err != nil {
+		t.Fatalf("Current(day2) error = %v", err)
+	}
+	if day2 == day1 {
+		t.Fatal("crossing the day boundary must rotate to a fresh id")
+	}
+	stable, err := repo.Current(ctx, "test", "u1", "2026-08-12")
+	if err != nil {
+		t.Fatalf("Current(day2 again) error = %v", err)
+	}
+	if stable != day2 {
+		t.Fatalf("post-rotation id = %q, want %q reused", stable, day2)
+	}
+
+	// 轮换是单调的：日期靠后的指针不会被日期靠前的调用方（时区配错、时钟回拨）
+	// 推回去，否则多实例会用新会话互相踩踏
+	backward, err := repo.Current(ctx, "test", "u1", "2026-08-11")
+	if err != nil {
+		t.Fatalf("Current(earlier day) error = %v", err)
+	}
+	if backward != day2 {
+		t.Fatalf("backward id = %q, want %q kept (rotation must be monotonic)", backward, day2)
+	}
+
+	if err := repo.Rotate(ctx, "test", "u1", "2026-08-12"); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+	rotated, err := repo.Current(ctx, "test", "u1", "2026-08-12")
+	if err != nil {
+		t.Fatalf("Current(after rotate) error = %v", err)
+	}
+	if rotated == day2 {
+		t.Fatal("Rotate() must yield a fresh id even within the same day")
 	}
 }
 
@@ -368,7 +484,9 @@ func TestGetOrCreateRecoversCommittedCreateError(t *testing.T) {
 
 func TestCreateConversationDoesNotDeleteConflictingSession(t *testing.T) {
 	ctx := context.Background()
-	dialector := sqlite.Open("file:conflict-" + t.Name() + "?mode=memory&cache=shared&_busy_timeout=5000")
+	// 临时文件而不是命名的共享缓存内存库：后者在同进程内跨运行（-count>1）共享
+	// 状态，种下的会话会残留到下一轮
+	dialector := sqlite.Open("file:" + filepath.Join(t.TempDir(), "conflict.db") + "?_busy_timeout=5000&_journal_mode=WAL")
 	manager, err := New("app", dialector)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)

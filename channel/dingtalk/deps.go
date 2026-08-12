@@ -15,8 +15,6 @@ import (
 // 侧不再维护副本，也就没有缓存一致性问题。这里只保留会话里没有的东西——确认卡片的
 // outTrackId 到 callId 的映射，以及跨实例的用户锁。
 type cardStore interface {
-	Close()
-
 	CreateAndDeliverRobot(ctx context.Context, userId string) (string, error)
 	CreateAndDeliverGroup(ctx context.Context, userId, conversationId string) (string, error)
 	NewOutTrackId() string

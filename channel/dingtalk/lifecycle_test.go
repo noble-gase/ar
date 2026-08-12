@@ -80,8 +80,8 @@ func TestStopCancelsWorkBeyondTheGrace(t *testing.T) {
 	}
 }
 
-// 忽略取消的任务照样要等到它退出：Go 杀不死 goroutine，Stop 提前返回并 Close 掉
-// card 只会让残留任务写已关闭的资源。真正的强制退出交给进程管理器。
+// 忽略取消的任务照样要等到它退出：Go 杀不死 goroutine，Stop 提前返回会让残留
+// 任务在进程退出的边缘继续写卡片或会话。真正的强制退出交给进程管理器。
 func TestStopWaitsForWorkThatIgnoresCancellation(t *testing.T) {
 	b := newTestBot(newFakeCard(), &fakeChat{})
 	b.shutdownGrace = 10 * time.Millisecond

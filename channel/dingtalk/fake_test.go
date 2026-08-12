@@ -55,8 +55,6 @@ func newFakeCard() *fakeCard {
 	}
 }
 
-func (f *fakeCard) Close() {}
-
 func (f *fakeCard) CreateAndDeliverRobot(context.Context, string) (string, error) {
 	if f.panicOnDeliver {
 		panic("deliver boom")

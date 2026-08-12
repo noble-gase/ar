@@ -84,7 +84,7 @@ func TestConfirmRejectsAlreadyAnswered(t *testing.T) {
 		t.Fatalf("Confirm() error = %v, want ErrAlreadyConfirmed", err)
 	}
 
-	// 当前会话里不存在的 callId 不能发给 runner，否则同日重置后的旧卡可能误恢复
+	// 当前会话里不存在的 callId 不能发给 runner：查无来源的确认只能明确拒绝
 	if _, err := chat.Confirm(ctx, "u1", conversation.ID(), "call-2", true, nil); !errors.Is(err, ErrConfirmationNotFound) {
 		t.Fatalf("Confirm(unrequested call) error = %v, want ErrConfirmationNotFound", err)
 	}

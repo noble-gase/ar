@@ -19,7 +19,7 @@ func newTestCardSender(t *testing.T) *CardSender {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { client.Close() })
 
-	return &CardSender{
+	s := &CardSender{
 		clientId: "test-client",
 		reduc:    client,
 
@@ -27,6 +27,9 @@ func newTestCardSender(t *testing.T) *CardSender {
 		lockRenewOverride: 50 * time.Millisecond,
 		lockRetryOverride: 10 * time.Millisecond,
 	}
+	// 与 NewCardSender 一致的默认；token 相关测试会按需覆盖
+	s.fetchToken = s.fetchAccessToken
+	return s
 }
 
 // 锁被别人接手后，持锁方的 context 必须被取消，否则会和新持锁者并发写会话。

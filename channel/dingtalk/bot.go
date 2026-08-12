@@ -81,8 +81,8 @@ func (b *Bot) Start() error {
 // Stop 停掉接收并等在途消息退出。
 //
 // 有上限的只是「自然排空」那一段，Stop 本身不保证有界：发出取消后它会一直等到
-// 所有 handler 真正退出。Go 杀不死 goroutine，若提前返回并 Close 掉 card，残留任务就会
-// 写已关闭的资源。完全忽略 context 的任务只能交给进程管理器的 shutdown deadline 收尾。
+// 所有 handler 真正退出，返回即代表不再有后台任务在写卡片或会话，进程可以放心
+// 退出。完全忽略 context 的任务只能交给进程管理器的 shutdown deadline 收尾。
 func (b *Bot) Stop() {
 	b.stopOnce.Do(func() {
 		slog.Info("[dingtalk bot] stopping")
@@ -100,7 +100,6 @@ func (b *Bot) Stop() {
 		}
 		b.stopCancel()
 		b.inFlight.Wait()
-		b.card.Close()
 	})
 }
 
@@ -458,8 +457,8 @@ type Config struct {
 	LockWait time.Duration
 
 	// ShutdownGrace 是 Stop 在发出取消之前，留给在途消息自己跑完的时长。它并不
-	// 限制 Stop 本身：被取消的 handler 仍会等到它真正退出，因为提前返回会让它们
-	// 写到已关闭的卡片客户端上。进程管理器的停机期限要配得比它长。
+	// 限制 Stop 本身：被取消的 handler 仍会等到它真正退出，Stop 返回才代表不再
+	// 有后台任务在写卡片或会话。进程管理器的停机期限要配得比它长。
 	// 为零时使用 defaultShutdownGrace（15 秒）。
 	ShutdownGrace time.Duration
 

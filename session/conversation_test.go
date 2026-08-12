@@ -4,22 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	adksession "google.golang.org/adk/v2/session"
 	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
-func newTestRepository(t *testing.T) ConversationRepository {
+func newTestRepository(t *testing.T) *conversationRepository {
 	t.Helper()
 
-	repo, err := NewConversationRepository(sqlite.Open("file:repo-" + t.Name() + "?mode=memory&cache=shared"))
+	// 临时文件避免命名共享缓存库在 -count>1 时的状态残留
+	dsn := "file:" + filepath.Join(t.TempDir(), "repo.db") + "?_busy_timeout=5000&_journal_mode=WAL"
+	db, err := gorm.Open(sqlite.Open(dsn), gormConfig())
 	if err != nil {
-		t.Fatalf("create conversation repository: %v", err)
+		t.Fatalf("open test db: %v", err)
 	}
-	return repo
+	if err := db.AutoMigrate(&Conversation{}); err != nil {
+		t.Fatalf("migrate test db: %v", err)
+	}
+	return &conversationRepository{db: db}
 }
 
 func TestConversationRepositoryPagination(t *testing.T) {
@@ -185,7 +192,8 @@ func TestDeleteHidesConversationEvenWhenSessionDeleteFails(t *testing.T) {
 }
 
 func TestNewInitializesConversationMetadata(t *testing.T) {
-	dialector := sqlite.Open("file:new-" + t.Name() + "?mode=memory&cache=shared")
+	// 临时文件避免命名共享缓存库在 -count>1 时的状态残留
+	dialector := sqlite.Open("file:" + filepath.Join(t.TempDir(), "new.db") + "?_busy_timeout=5000&_journal_mode=WAL")
 	manager, err := New("app", dialector)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)

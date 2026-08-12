@@ -18,7 +18,30 @@ import (
 type Session struct {
 	name     string
 	service  session.Service
-	convRepo ConversationRepository
+	convRepo *conversationRepository
+	autoRepo *autoConversationRepository
+
+	// loc 决定自动会话按自然日轮换的边界，见 WithLocation。
+	loc *time.Location
+}
+
+// Option 配置 Session 的可选行为。
+type Option func(*Session)
+
+// WithLocation 设置自动会话按自然日轮换所用的时区，默认 time.Local。
+// 多实例部署必须显式配置同一时区，否则各实例的「当天」边界不一致，
+// 同一用户会被路由到不同的自动会话。
+func WithLocation(loc *time.Location) Option {
+	return func(s *Session) {
+		if loc != nil {
+			s.loc = loc
+		}
+	}
+}
+
+// today 返回配置时区下的自然日，作为自动会话的轮换边界。
+func (s *Session) today() string {
+	return time.Now().In(s.loc).Format(time.DateOnly)
 }
 
 func (s *Session) AppName() string {
@@ -127,15 +150,19 @@ func (s *Session) Delete(ctx context.Context, userId, conversationId string) err
 	return nil
 }
 
-// GetOrCreate 返回 userId 当天的自动会话，适用于钉钉等不管理会话 ID 的渠道。
-// 会话 ID 由 (应用, 用户, 自然日) 确定性派生，并发调用者和崩溃后的重试天然收敛到
-// 同一个会话：ADK 主键保证创建至多成功一次，落败者复查一次即可复用。
+// GetOrCreate 返回 userId 当前的自动会话，适用于钉钉等不管理会话 ID 的渠道。
+// 会话 ID 来自 (应用, 用户) 的指针记录，跨自然日（按配置时区）自动轮换到新会话。
+// 并发调用者在指针表上通过条件写收敛到同一个 ID；ADK 会话的创建竞态由主键约束
+// 保证至多成功一次，落败者复查一次即可复用。
 // eventNum 限制返回会话携带的最近事件条数，0 表示全量加载；只要会话 ID 的调用方传 1。
 func (s *Session) GetOrCreate(ctx context.Context, userId string, eventNum int) (session.Session, error) {
 	if len(userId) == 0 || utf8.RuneCountInString(userId) > maxUserIDRunes {
 		return nil, ErrInvalidUserID
 	}
-	conversationId := autoConversationID(s.name, userId)
+	conversationId, err := s.autoRepo.Current(ctx, s.name, userId, s.today())
+	if err != nil {
+		return nil, err
+	}
 
 	load := func() session.Session {
 		resp, err := s.service.Get(ctx, &session.GetRequest{
@@ -168,25 +195,38 @@ func (s *Session) GetOrCreate(ctx context.Context, userId string, eventNum int) 
 	return resp.Session, nil
 }
 
-// ResetAutomatic 删除当天那个确定性的自动会话。下一次 GetOrCreate 会以干净的
-// 工作流状态和对话历史重新开始。
-// 自动会话没有对话元数据，所以必须直接从 ADK service 删除，而不是走 Delete。
+// ResetAutomatic 把自动会话指针轮换到一个全新的 ID，并尽力删除旧会话。当前会话
+// 连同其中暂停的图工作流随之不可达，下一次 GetOrCreate 会以干净的状态重新开始。
+//
+// 先换指针再删除：指针一换，旧会话就对渠道不可达了，删除失败至多留下一个无法
+// 寻址的孤儿（与 Delete 的孤儿语义一致），不影响正确性。读指针和换指针之间没有
+// 原子性，但渠道侧的重置都在用户锁内串行化；即便真的竞争，最坏也只是漏删一个
+// 孤儿。指向旧会话的确认卡片会因会话不匹配而得到 ErrConversationChanged，与
+// 跨日轮换走同一条失效路径。
 func (s *Session) ResetAutomatic(ctx context.Context, userId string) error {
 	if len(userId) == 0 || utf8.RuneCountInString(userId) > maxUserIDRunes {
 		return ErrInvalidUserID
 	}
-	return s.service.Delete(ctx, &session.DeleteRequest{
-		AppName:   s.name,
-		UserID:    userId,
-		SessionID: autoConversationID(s.name, userId),
-	})
-}
 
-// autoConversationID 由应用、用户和本地时区的自然日派生，跨自然日自动轮换到新会话。
-func autoConversationID(appName, userId string) string {
-	today := time.Now().In(time.Local).Format(time.DateOnly)
-	name := fmt.Sprintf("argon:auto:%s:%s:%s", appName, userId, today)
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
+	old, err := s.autoRepo.CurrentID(ctx, s.name, userId)
+	if err != nil {
+		return err
+	}
+	if err := s.autoRepo.Rotate(ctx, s.name, userId, s.today()); err != nil {
+		return err
+	}
+
+	if old != "" {
+		if err := s.service.Delete(ctx, &session.DeleteRequest{
+			AppName:   s.name,
+			UserID:    userId,
+			SessionID: old,
+		}); err != nil {
+			slog.ErrorContext(ctx, "[session] delete rotated automatic session failed",
+				slog.String("conversationId", old), slog.Any("error", err))
+		}
+	}
+	return nil
 }
 
 // gormConfig 使用 Warn 级别，避免生产环境逐条打印 SQL。
@@ -201,8 +241,11 @@ func gormConfig() *gorm.Config {
 	}
 }
 
-// New 初始化 ADK 会话存储和会话元数据存储。连接生命周期由 dialector 的持有方负责。
-func New(name string, dialector gorm.Dialector) (*Session, error) {
+// New 初始化 ADK 会话存储、会话元数据存储和自动会话指针存储。
+//
+// 元数据与指针共用一个连接池；ADK service 的池由它自己持有
+// （database.NewSessionService 只接受 dialector，无法注入现成连接）。
+func New(name string, dialector gorm.Dialector, opts ...Option) (*Session, error) {
 	if len(name) == 0 || utf8.RuneCountInString(name) > maxAppNameRunes {
 		return nil, ErrInvalidAppName
 	}
@@ -215,9 +258,23 @@ func New(name string, dialector gorm.Dialector) (*Session, error) {
 		return nil, err
 	}
 
-	convRepo, err := NewConversationRepository(dialector, gormConfig())
+	db, err := gorm.Open(dialector, gormConfig())
 	if err != nil {
 		return nil, err
 	}
-	return &Session{name: name, service: svc, convRepo: convRepo}, nil
+	if err := db.AutoMigrate(&Conversation{}, &autoConversation{}); err != nil {
+		return nil, fmt.Errorf("migrate session metadata: %w", err)
+	}
+
+	s := &Session{
+		name:     name,
+		service:  svc,
+		convRepo: &conversationRepository{db: db},
+		autoRepo: &autoConversationRepository{db: db},
+		loc:      time.Local,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }

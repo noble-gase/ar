@@ -199,13 +199,14 @@ var ErrAlreadyConfirmed = errors.New("llmchat: tool confirmation already answere
 
 // ErrConversationChanged 表示这次确认所属的会话已经不是当前自动会话。
 //
-// 自动会话按自然日轮换，跨日后旧卡片指向的那次执行已被放弃，恢复它只会得到一个
-// 语焉不详的「找不到 callId」。当天 ResetAutomatic 会重建出同一个确定性 ID，那种
-// 情况轮不到这里，由 ErrConfirmationNotFound 兜住。
+// 自动会话跨自然日轮换，ResetAutomatic 也会把指针换到全新的 ID，两种情况下旧
+// 卡片指向的那次执行都已被放弃。恢复它只会得到一个语焉不详的「找不到 callId」，
+// 所以在这里统一拦下。
 var ErrConversationChanged = errors.New("llmchat: conversation changed")
 
-// ErrConfirmationNotFound 表示当前会话里没有仍待处理的指定确认。它覆盖同日
-// ResetAutomatic 后确定性 session ID 不变、但旧 callId 已随会话内容一起消失的情况。
+// ErrConfirmationNotFound 表示当前会话里没有仍待处理的指定确认。会话既然匹配，
+// 正常流程不会走到这里，它是防御性兜底：调用方传错 callId、或会话历史意外缺失
+// 时，绝不能把一个查无来源的确认发给 runner。
 var ErrConfirmationNotFound = errors.New("llmchat: tool confirmation not found")
 
 // resumableConfirmation 判断 callId 是否还能被恢复。
