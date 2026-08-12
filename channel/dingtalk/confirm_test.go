@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/noble-gase/argon/llmchat"
+	"github.com/noble-gase/argon/userlock"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/card"
 	adk_session "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
@@ -397,7 +398,7 @@ func TestRetryOnOriginalCardWhenResumeNotStarted(t *testing.T) {
 // 用户忙时确认同样原样保留，提示等上一条消息完成后重点，而不是按故障处理。
 func TestConfirmBusyPromptsRetryAfterCurrentRun(t *testing.T) {
 	b, cardStore, _ := confirmBot(t)
-	cardStore.lockErr = errUserBusy
+	cardStore.lockErr = userlock.ErrBusy
 
 	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
 

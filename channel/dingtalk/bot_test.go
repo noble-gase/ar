@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/noble-gase/argon/llmchat"
+	"github.com/noble-gase/argon/userlock"
 	adk_session "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/adk/v2/workflow"
@@ -527,7 +528,7 @@ func TestLockFailureStopsProcessing(t *testing.T) {
 // 用户忙是正常排队，要如实告知「上一条还在处理」，不能按基础设施故障处理。
 func TestLockBusyShowsBusyMessage(t *testing.T) {
 	card, chat := newFakeCard(), &fakeChat{}
-	card.lockErr = errUserBusy
+	card.lockErr = userlock.ErrBusy
 	b := newTestBot(card, chat)
 
 	b.streamAnswer(context.Background(), meta, "在吗", "track")

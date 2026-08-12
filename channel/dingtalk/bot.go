@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/noble-gase/argon/llmchat"
+	"github.com/noble-gase/argon/userlock"
 	"github.com/noble-gase/neon/helper"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/chatbot"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
@@ -207,7 +208,7 @@ func (b *Bot) messageHandler(ctx context.Context, data *chatbot.BotCallbackDataM
 // 所有会驱动 ADK session 或改动确认记录的操作都必须在这里面完成：聊天消息、
 // 确认回调、取消，三者共用同一把锁，因此彼此天然互斥，不需要第二套并发控制。
 // 传给 fn 的 ctx 会在锁失去所有权时被取消，据此中止执行，避免与新持锁者并发写。
-// 抢锁等待有独立于 b.timeout 的上限，超时返回 errUserBusy，调用方按「正忙」
+// 抢锁等待有独立于 b.timeout 的上限，超时返回 userlock.ErrBusy，调用方按「正忙」
 // 而不是故障来呈现。
 func (b *Bot) locked(ctx context.Context, userId string, fn func(ctx context.Context)) error {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
@@ -216,7 +217,7 @@ func (b *Bot) locked(ctx context.Context, userId string, fn func(ctx context.Con
 	held, unlock, err := b.card.lockUser(ctx, userId)
 	if err != nil {
 		// 正常排队（用户连发两条）不是故障，按 ERROR 记会把真正的锁异常淹掉
-		if errors.Is(err, errUserBusy) {
+		if errors.Is(err, userlock.ErrBusy) {
 			slog.InfoContext(ctx, "[dingtalk bot] user busy, message not processed", slog.String("userId", userId))
 		} else {
 			slog.ErrorContext(ctx, "[dingtalk bot] lock user failed", slog.String("error", err.Error()), slog.String("userId", userId))
@@ -269,7 +270,7 @@ func (b *Bot) streamAnswer(ctx context.Context, meta msgMeta, text, outTrackId s
 		b.handleAnswer(ctx, seq, meta, outTrackId, sessionId)
 	})
 	// 「正忙」是正常排队，「拿不到锁」是基础设施故障，不能用同一句话误导用户
-	if errors.Is(err, errUserBusy) {
+	if errors.Is(err, userlock.ErrBusy) {
 		b.settle(ctx, outTrackId, "> ⏳ 上一条消息还在处理中，请等它完成后再发。")
 	} else if err != nil {
 		b.settle(ctx, outTrackId, "> ⚠️ 暂时无法处理，请稍后重试。")
@@ -453,7 +454,7 @@ type Config struct {
 
 	// LockWait 是排队消息等待上一条消息释放用户锁的时长上限。它应远小于
 	// Timeout：超过这个时长就提示用户「上一条消息还在处理中」，而不是陪着
-	// 上一条消息跑完全程。为零时使用 defaultLockWait（30 秒）。
+	// 上一条消息跑完全程。为零时使用 userlock 包的默认值（30 秒）。
 	LockWait time.Duration
 
 	// ShutdownGrace 是 Stop 在发出取消之前，留给在途消息自己跑完的时长。它并不

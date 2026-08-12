@@ -16,6 +16,14 @@ import (
 	"google.golang.org/genai"
 )
 
+// Chat 把 agent 与会话存储组合成可对话的服务。
+//
+// 并发契约：自动会话族 API（Ask、Reply、Confirm、Pending、ResetAutomatic）必须
+// 按 userId 串行化，多实例部署时要跨实例。Chat 自身不加锁——互斥需要分布式协调，
+// 那是渠道层的职责；可直接复用 userlock 包（钉钉渠道即用它实现）。违反契约的
+// 后果：并发消息会让事件在同一个会话里交错；与 ResetAutomatic 并发的运行可能把
+// 结果写进刚被轮换掉的旧会话，回答静默丢失。显式会话族 API 同理，按
+// (userId, conversationId) 串行化。
 type Chat struct {
 	runner  *runner.Runner
 	session *session.Session
@@ -47,6 +55,7 @@ func (c *Chat) automatic(ctx context.Context, userId string) (string, error) {
 //
 // 它面向钉钉这类不管理会话 ID 的渠道。凡是要把这次运行的信息持久化的调用方，
 // 都必须记下返回的 ID，而不是之后重新解析一次：自动会话在午夜会轮换。
+// 调用方必须按 userId 串行化，见 Chat 的并发契约。
 func (c *Chat) Ask(ctx context.Context, userId, text string) (string, iter.Seq2[*adk_session.Event, error], error) {
 	conversationId, err := c.automatic(ctx, userId)
 	if err != nil {
@@ -272,6 +281,9 @@ func decodeReply(fr *genai.FunctionResponse) any {
 
 // ResetAutomatic 丢弃当前的自动会话，包括因人工输入而暂停的图工作流。
 // 下一次 Ask 会创建一个干净的会话。
+//
+// 不要与同一 userId 的进行中运行并发调用：运行会把结果写进刚被轮换掉的旧会话。
+// 串行化责任在渠道层，见 Chat 的并发契约。
 func (c *Chat) ResetAutomatic(ctx context.Context, userId string) error {
 	return c.session.ResetAutomatic(ctx, userId)
 }

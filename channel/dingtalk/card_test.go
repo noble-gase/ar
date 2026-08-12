@@ -6,7 +6,28 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/noble-gase/argon/userlock"
+	"github.com/redis/go-redis/v9"
 )
+
+func newTestCardSender(t *testing.T) *CardSender {
+	t.Helper()
+
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { client.Close() })
+
+	s := &CardSender{
+		clientId: "test-client",
+		reduc:    client,
+		lock:     userlock.New(client, userlock.Config{Prefix: "test:lock"}),
+	}
+	// 与 NewCardSender 一致的默认；token 相关测试会按需覆盖
+	s.fetchToken = s.fetchAccessToken
+	return s
+}
 
 // token 的获取顺序：进程内缓存 → Redis → 直连刷新。前两级不发任何 HTTP 请求，
 // 直连刷新需要真实凭据，由 NewCardSender 启动时的初始化校验覆盖。

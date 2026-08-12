@@ -13,6 +13,7 @@ import (
 	dingcard "github.com/alibabacloud-go/dingtalk/card_1_0"
 	util "github.com/alibabacloud-go/tea-utils/v2/service"
 	"github.com/google/uuid"
+	"github.com/noble-gase/argon/userlock"
 	"github.com/noble-gase/neon/helper"
 	"github.com/noble-gase/neon/httpkit"
 	"github.com/redis/go-redis/v9"
@@ -44,12 +45,8 @@ type CardSender struct {
 	card  *dingcard.Client
 	reduc redis.UniversalClient
 
-	// lock*Override 为零时用 default* 常量。TTL/Renew/Retry 仅用于测试提速，
-	// Wait 还承接 Config.LockWait。
-	lockTTLOverride   time.Duration
-	lockRenewOverride time.Duration
-	lockRetryOverride time.Duration
-	lockWaitOverride  time.Duration
+	// lock 跨实例串行化同一用户的消息处理，见 userlock 包。
+	lock *userlock.Locker
 
 	// tokenMu 保护以下字段并串行化刷新：并发调用只有一个真的去请求钉钉，
 	// 其余等它写回缓存。
@@ -139,6 +136,12 @@ func (s *CardSender) DeliverConfirm(ctx context.Context, outTrackId string, meta
 		return s.deliver(ctx, outTrackId, s.confirmTemplateId, "IM_GROUP", meta.userId, meta.groupConvId, params)
 	}
 	return s.deliver(ctx, outTrackId, s.confirmTemplateId, "IM_ROBOT", meta.userId, "", params)
+}
+
+// lockUser 跨实例串行化同一用户的消息处理：两条消息并发驱动同一个 ADK session
+// 会让事件交错、待回答状态互相覆盖。语义见 userlock.Locker.Lock。
+func (s *CardSender) lockUser(ctx context.Context, userId string) (context.Context, func(), error) {
+	return s.lock.Lock(ctx, userId)
 }
 
 // StreamingUpdate 流式更新卡片内容（全量覆盖）
@@ -331,7 +334,10 @@ func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 
 		tokenKey: fmt.Sprintf("adk:access_token:dingtalk:%s", cfg.ClientId),
 
-		lockWaitOverride: cfg.LockWait,
+		lock: userlock.New(uc, userlock.Config{
+			Prefix: fmt.Sprintf("adk:userlock:dingtalk:%s", cfg.ClientId),
+			Wait:   cfg.LockWait,
+		}),
 
 		card:  client,
 		reduc: uc,
