@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/noble-gase/neon/helper"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
@@ -16,30 +15,30 @@ import (
 type TrackerFactory struct {
 	mu sync.RWMutex
 
-	Trackers map[string]*ChatTracker `json:"trackers"` // key = trace_id
+	trackers map[string]*InvoTracker // key = invocationId
 }
 
-func (f *TrackerFactory) get(ctx agent.Context) *ChatTracker {
+func (f *TrackerFactory) get(ctx agent.Context) *InvoTracker {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	return f.Trackers[helper.MDTraceIdFromCtx(ctx)]
+	return f.trackers[ctx.InvocationID()]
 }
 
 func (f *TrackerFactory) add(ctx agent.Context) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	traceId := helper.MDTraceIdFromCtx(ctx)
+	invoId := ctx.InvocationID()
 	agentName := ctx.AgentName()
 
-	f.Trackers[traceId] = &ChatTracker{
+	f.trackers[invoId] = &InvoTracker{
 		UserId:    ctx.UserID(),
 		SessionId: ctx.SessionID(),
 		Agents: map[string]*AgentTracker{
 			agentName: {
 				Name:   agentName,
-				InvoId: ctx.InvocationID(),
+				InvoId: invoId,
 				Tokens: &TokenUsage{},
 			},
 		},
@@ -50,7 +49,7 @@ func (f *TrackerFactory) delete(ctx agent.Context) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	delete(f.Trackers, helper.MDTraceIdFromCtx(ctx))
+	delete(f.trackers, ctx.InvocationID())
 }
 
 func (f *TrackerFactory) BeforeAgent(ctx agent.Context) (*genai.Content, error) {
@@ -91,9 +90,9 @@ func (f *TrackerFactory) AfterAgent(ctx agent.Context) (*genai.Content, error) {
 	return nil, nil
 }
 
-// --------- ChatTracker tracker ---------
+// --------- InvoTracker tracker ---------
 
-type ChatTracker struct {
+type InvoTracker struct {
 	mu sync.Mutex
 
 	UserId    string `json:"user_id"`
@@ -102,7 +101,7 @@ type ChatTracker struct {
 	Agents map[string]*AgentTracker `json:"agents"` // key = agent_name
 }
 
-func (t *ChatTracker) add(ctx agent.Context) {
+func (t *InvoTracker) add(ctx agent.Context) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -115,7 +114,7 @@ func (t *ChatTracker) add(ctx agent.Context) {
 	}
 }
 
-func (t *ChatTracker) AfterTool(ctx agent.Context, tool tool.Tool, args, result map[string]any, err error) {
+func (t *InvoTracker) AfterTool(ctx agent.Context, tool tool.Tool, args, result map[string]any, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -130,7 +129,7 @@ func (t *ChatTracker) AfterTool(ctx agent.Context, tool tool.Tool, args, result 
 	})
 }
 
-func (t *ChatTracker) AfterModel(ctx agent.Context, resp *model.LLMResponse, err error) {
+func (t *InvoTracker) AfterModel(ctx agent.Context, resp *model.LLMResponse, err error) {
 	if resp == nil || resp.UsageMetadata == nil {
 		return
 	}
@@ -147,7 +146,7 @@ func (t *ChatTracker) AfterModel(ctx agent.Context, resp *model.LLMResponse, err
 	agent.Tokens.Total += int(resp.UsageMetadata.TotalTokenCount)
 }
 
-func (t *ChatTracker) AfterAgent(ctx agent.Context) bool {
+func (t *InvoTracker) AfterAgent(ctx agent.Context) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -213,7 +212,7 @@ type TokenUsage struct {
 
 func NewTrackerFactory() *TrackerFactory {
 	return &TrackerFactory{
-		Trackers: make(map[string]*ChatTracker),
+		trackers: make(map[string]*InvoTracker),
 	}
 }
 
