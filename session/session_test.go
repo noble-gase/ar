@@ -14,6 +14,7 @@ import (
 	"google.golang.org/genai"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func newTestManager(t *testing.T) *Session {
@@ -23,7 +24,7 @@ func newTestManager(t *testing.T) *Session {
 	// SQLITE_LOCKED（table is locked），它不受 busy_timeout 约束，
 	// 会让并发收敛类测试无谓地失败。
 	dsn := "file:" + filepath.Join(t.TempDir(), "session.db") + "?_busy_timeout=5000&_journal_mode=WAL"
-	db, err := gorm.Open(sqlite.Open(dsn), gormConfig())
+	db, err := gorm.Open(sqlite.Open(dsn), gormConfig(logger.Silent))
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestThoughtSignatureSurvivesPersistence(t *testing.T) {
 	ctx := context.Background()
 
 	dsn := "file:" + filepath.Join(t.TempDir(), "thought.db") + "?_busy_timeout=5000&_journal_mode=WAL"
-	service, err := database.NewSessionService(sqlite.Open(dsn), gormConfig())
+	service, err := database.NewSessionService(sqlite.Open(dsn), gormConfig(logger.Silent))
 	if err != nil {
 		t.Fatalf("NewSessionService() error = %v", err)
 	}

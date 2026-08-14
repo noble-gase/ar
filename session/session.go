@@ -23,20 +23,9 @@ type Session struct {
 
 	// loc 决定自动会话按自然日轮换的边界，见 WithLocation。
 	loc *time.Location
-}
 
-// Option 配置 Session 的可选行为。
-type Option func(*Session)
-
-// WithLocation 设置自动会话按自然日轮换所用的时区，默认 time.Local。
-// 多实例部署必须显式配置同一时区，否则各实例的「当天」边界不一致，
-// 同一用户会被路由到不同的自动会话。
-func WithLocation(loc *time.Location) Option {
-	return func(s *Session) {
-		if loc != nil {
-			s.loc = loc
-		}
-	}
+	// logLevel 决定 GORM 的日志级别，默认 logger.Warn。
+	logLevel logger.LogLevel
 }
 
 // today 返回配置时区下的自然日，作为自动会话的轮换边界。
@@ -229,13 +218,12 @@ func (s *Session) ResetAutomatic(ctx context.Context, userId string) error {
 	return nil
 }
 
-// gormConfig 使用 Warn 级别，避免生产环境逐条打印 SQL。
-func gormConfig() *gorm.Config {
+func gormConfig(logLevel logger.LogLevel) *gorm.Config {
 	return &gorm.Config{
 		TranslateError: true,
 		Logger: logger.NewSlogLogger(slog.Default(), logger.Config{
 			SlowThreshold:             time.Second,
-			LogLevel:                  logger.Warn,
+			LogLevel:                  logLevel,
 			IgnoreRecordNotFoundError: true,
 		}),
 	}
@@ -250,7 +238,16 @@ func New(name string, dialector gorm.Dialector, opts ...Option) (*Session, error
 		return nil, ErrInvalidAppName
 	}
 
-	svc, err := database.NewSessionService(dialector, gormConfig())
+	s := &Session{
+		name:     name,
+		loc:      time.Local,
+		logLevel: logger.Warn,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	svc, err := database.NewSessionService(dialector, gormConfig(s.logLevel))
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +255,7 @@ func New(name string, dialector gorm.Dialector, opts ...Option) (*Session, error
 		return nil, err
 	}
 
-	db, err := gorm.Open(dialector, gormConfig())
+	db, err := gorm.Open(dialector, gormConfig(s.logLevel))
 	if err != nil {
 		return nil, err
 	}
@@ -266,15 +263,9 @@ func New(name string, dialector gorm.Dialector, opts ...Option) (*Session, error
 		return nil, fmt.Errorf("migrate session metadata: %w", err)
 	}
 
-	s := &Session{
-		name:     name,
-		service:  svc,
-		convRepo: &conversationRepository{db: db},
-		autoRepo: &autoConversationRepository{db: db},
-		loc:      time.Local,
-	}
-	for _, opt := range opts {
-		opt(s)
-	}
+	s.service = svc
+	s.convRepo = &conversationRepository{db: db}
+	s.autoRepo = &autoConversationRepository{db: db}
+
 	return s, nil
 }

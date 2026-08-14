@@ -12,6 +12,7 @@ import (
 	adksession "google.golang.org/adk/v2/session"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func newTestRepository(t *testing.T) *conversationRepository {
@@ -19,7 +20,7 @@ func newTestRepository(t *testing.T) *conversationRepository {
 
 	// 临时文件避免命名共享缓存库在 -count>1 时的状态残留
 	dsn := "file:" + filepath.Join(t.TempDir(), "repo.db") + "?_busy_timeout=5000&_journal_mode=WAL"
-	db, err := gorm.Open(sqlite.Open(dsn), gormConfig())
+	db, err := gorm.Open(sqlite.Open(dsn), gormConfig(logger.Silent))
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}

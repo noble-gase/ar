@@ -209,8 +209,8 @@ func TestRootCompletionCleansIncompleteChildren(t *testing.T) {
 	// 模拟 child 的 AfterAgent 因 ADK 短路没有发生。
 	factory.AfterAgent(root) //nolint:errcheck
 
-	if completed.IncompleteActivations != 1 {
-		t.Errorf("incomplete activations = %d, want 1", completed.IncompleteActivations)
+	if completed.Incomplete != 1 {
+		t.Errorf("incomplete = %d, want 1", completed.Incomplete)
 	}
 	if got := factory.Snapshot(); len(got) != 0 {
 		t.Fatalf("Snapshot() = %+v, want incomplete invocation cleaned", got)
@@ -297,7 +297,7 @@ func TestTrackerHandlesParallelAgents(t *testing.T) {
 
 	select {
 	case snapshot := <-completed:
-		if len(snapshot.Agents) != children+1 || snapshot.IncompleteActivations != 0 {
+		if len(snapshot.Agents) != children+1 || snapshot.Incomplete != 0 {
 			t.Fatalf("completed snapshot = %+v, want all agents complete", snapshot)
 		}
 	case <-time.After(2 * time.Second):

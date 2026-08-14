@@ -189,8 +189,8 @@ func (f *TrackerFactory) emitSnapshot(ctx context.Context, snapshot InvoSnapshot
 		slog.String("invocation_id", snapshot.InvoID),
 		slog.String("user_id", snapshot.UserID),
 		slog.String("session_id", snapshot.SessionID),
-		slog.Duration("duration", snapshot.FinishedAt.Sub(snapshot.StartedAt)),
-		slog.Int("incomplete_activations", snapshot.IncompleteActivations),
+		slog.String("duration", snapshot.FinishedAt.Sub(snapshot.StartedAt).String()),
+		slog.Int("incomplete", snapshot.Incomplete),
 		slog.GroupAttrs(
 			"tokens",
 			slog.Int64("prompt", snapshot.Tokens.Prompt),
@@ -368,7 +368,7 @@ func (t *invoTracker) finish(meta trackerContext, now time.Time) (InvoSnapshot, 
 
 	// 正常嵌套运行在 active == 0 时完成。根 Agent 的 AfterAgent 是 invocation 的
 	// 结束信号，即便某个子 Agent 的 AfterAgent 因短路被跳过，也要输出带
-	// IncompleteActivations 的快照并清理，避免永久泄漏。
+	// Incomplete 的快照并清理，避免永久泄漏。
 	if t.active != 0 && meta.ActivationID != t.rootActivation {
 		return InvoSnapshot{}, false
 	}
@@ -389,13 +389,13 @@ func (t *invoTracker) snapshot(now time.Time, finished bool) InvoSnapshot {
 
 func (t *invoTracker) snapshotLocked(now time.Time, finished bool) InvoSnapshot {
 	snapshot := InvoSnapshot{
-		InvoID:                t.invoID,
-		UserID:                t.userID,
-		SessionID:             t.sessionID,
-		StartedAt:             t.startedAt,
-		UpdatedAt:             t.updatedAt,
-		IncompleteActivations: t.active,
-		Agents:                make([]*AgentTracker, 0, len(t.order)),
+		InvoID:     t.invoID,
+		UserID:     t.userID,
+		SessionID:  t.sessionID,
+		StartedAt:  t.startedAt,
+		UpdatedAt:  t.updatedAt,
+		Incomplete: t.active,
+		Agents:     make([]*AgentTracker, 0, len(t.order)),
 	}
 	if finished {
 		snapshot.FinishedAt = now
@@ -426,9 +426,9 @@ type InvoSnapshot struct {
 	// 避免序列化出零值时间（omitempty 对 time.Time 无效）。
 	FinishedAt time.Time `json:"finished_at,omitzero"`
 
-	IncompleteActivations int             `json:"incomplete_activations,omitempty"`
-	Agents                []*AgentTracker `json:"agents"`
-	Tokens                TokenUsage      `json:"tokens"`
+	Incomplete int             `json:"incomplete,omitempty"`
+	Agents     []*AgentTracker `json:"agents"`
+	Tokens     TokenUsage      `json:"tokens"`
 }
 
 // AgentTracker 聚合同一 invocation 内某个 Agent 的所有运行。
