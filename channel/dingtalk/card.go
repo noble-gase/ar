@@ -35,9 +35,8 @@ type CardSender struct {
 	clientSecret string
 	templateId   string
 
-	// confirmTemplateId 是人工确认卡片使用的模板。它应当有两个按钮，回调时通过
-	// "decision" 参数（"approve"/"reject"）或 action id
-	// （"confirm_approve"/"confirm_reject"）上报决定。
+	// confirmTemplateId 是人工确认卡片使用的模板，正文是普通变量、且带同意/拒绝
+	// 两个按钮，与回答卡的流式模板不通用。未配置 ConfirmCard 时为空。
 	confirmTemplateId string
 
 	tokenKey string
@@ -129,6 +128,7 @@ func (s *CardSender) NewOutTrackId() string {
 }
 
 // DeliverConfirm 用指定的 outTrackId 投放「确认」卡片（带同意/拒绝按钮）。
+// content 写入普通模板变量，之后的文案更新走 UpdateParams，不走 StreamingUpdate。
 func (s *CardSender) DeliverConfirm(ctx context.Context, outTrackId string, meta msgMeta, content string) (string, error) {
 	params := map[string]string{"content": content}
 
@@ -136,6 +136,37 @@ func (s *CardSender) DeliverConfirm(ctx context.Context, outTrackId string, meta
 		return s.deliver(ctx, outTrackId, s.confirmTemplateId, "IM_GROUP", meta.userId, meta.groupConvId, params)
 	}
 	return s.deliver(ctx, outTrackId, s.confirmTemplateId, "IM_ROBOT", meta.userId, "", params)
+}
+
+// UpdateParams 按 key 合并更新卡片的普通模板变量（不动流式正文）。确认卡的
+// content 和 status 都走这条路：它可以多次调用，没有 StreamingUpdate 那种
+// finalize 之后再也写不进去的限制。
+func (s *CardSender) UpdateParams(ctx context.Context, outTrackId string, params map[string]string) error {
+	if len(params) == 0 {
+		return nil
+	}
+
+	accessToken, err := s.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	paramMap := make(map[string]*string, len(params))
+	for k, v := range params {
+		paramMap[k] = new(v)
+	}
+
+	req := &dingcard.UpdateCardRequest{
+		OutTrackId:        new(outTrackId),
+		CardData:          &dingcard.UpdateCardRequestCardData{CardParamMap: paramMap},
+		CardUpdateOptions: &dingcard.UpdateCardRequestCardUpdateOptions{UpdateCardDataByKey: new(true)},
+	}
+	headers := &dingcard.UpdateCardHeaders{
+		XAcsDingtalkAccessToken: new(accessToken),
+	}
+
+	_, err = s.card.UpdateCardWithOptions(req, headers, &util.RuntimeOptions{})
+	return err
 }
 
 // lockUser 跨实例串行化同一用户的消息处理：两条消息并发驱动同一个 ADK session
@@ -320,8 +351,11 @@ func NewCardSender(cfg *Config, uc redis.UniversalClient) (*CardSender, error) {
 		return nil, err
 	}
 
-	confirmTemplateId := cfg.CardTemplateId
-	if cfg.ConfirmCard != nil && cfg.ConfirmCard.TemplateId != "" {
+	confirmTemplateId := ""
+	if cfg.ConfirmCard != nil {
+		if cfg.ConfirmCard.TemplateId == "" {
+			return nil, errors.New("dingtalk: ConfirmCard.TemplateId is required")
+		}
 		confirmTemplateId = cfg.ConfirmCard.TemplateId
 	}
 

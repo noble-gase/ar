@@ -16,11 +16,18 @@ import (
 	"google.golang.org/adk/v2/session"
 )
 
+type paramUpdate struct {
+	outTrackId string
+	params     map[string]string
+}
+
 // fakeCard 是内存版的 cardStore，每个方法都能单独触发失败，这样不依赖 Redis
 // 和钉钉也能覆盖 Bot 的各条错误分支。
 type fakeCard struct {
 	mu    sync.Mutex
 	cards []string
+
+	updatedParams []paramUpdate
 
 	pendings map[string]*pendingConfirm
 	byUser   map[string][]string
@@ -39,6 +46,7 @@ type fakeCard struct {
 	lockErr           error
 	deliverErr        error
 	confirmDeliverErr error
+	updateParamsErr   error
 
 	// loseLock 模拟持锁期间被别人接手：返回的 context 立刻取消。
 	loseLock bool
@@ -109,6 +117,31 @@ func (f *fakeCard) lastCard() string {
 		return ""
 	}
 	return f.cards[len(f.cards)-1]
+}
+
+func (f *fakeCard) UpdateParams(_ context.Context, outTrackId string, params map[string]string) error {
+	if f.updateParamsErr != nil {
+		return f.updateParamsErr
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updatedParams = append(f.updatedParams, paramUpdate{outTrackId: outTrackId, params: params})
+	// 确认卡的 content 是普通变量，走这条路更新，测试断言仍看 cards
+	if content, ok := params["content"]; ok {
+		f.cards = append(f.cards, content)
+	}
+	return nil
+}
+
+// lastParams 返回最近一次按 key 更新的模板变量，没更新过时返回 nil。
+func (f *fakeCard) lastParams() map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.updatedParams) == 0 {
+		return nil
+	}
+	return f.updatedParams[len(f.updatedParams)-1].params
 }
 
 func (f *fakeCard) savePending(_ context.Context, outTrackId string, p *pendingConfirm) error {

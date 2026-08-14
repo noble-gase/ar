@@ -56,13 +56,16 @@ type trackerContext struct {
 }
 
 func trackerContextOf(ctx agent.Context) trackerContext {
-	// Branch / Path / RunID 区分同名 Agent 的不同激活；名称仍作为聚合维度。
+	// Path / RunID 只存在于 workflow 节点上下文。Agent / Tool 回调走的是
+	// callbackContextWrapper / toolContextWrapper，调用这两个方法只会打
+	// "not supported" 日志并返回空串，不能用来区分激活。
+	// Branch 在回调上下文可用，配合 AgentName 识别根 Agent vs 嵌套激活。
 	return trackerContext{
 		InvoID:       ctx.InvocationID(),
 		UserID:       ctx.UserID(),
 		SessionID:    ctx.SessionID(),
 		AgentName:    ctx.AgentName(),
-		ActivationID: ctx.AgentName() + "\x00" + ctx.Branch() + "\x00" + ctx.Path() + "\x00" + ctx.RunID(),
+		ActivationID: ctx.AgentName() + "\x00" + ctx.Branch(),
 	}
 }
 

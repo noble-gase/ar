@@ -354,6 +354,26 @@ func TestFailedConfirmCardDoesNotStrandTheSession(t *testing.T) {
 	}
 }
 
+// discard 清掉的确认卡必须写成「已随对话取消」，不能仍显示可点的同意/拒绝。
+func TestDiscardSettlesConfirmCards(t *testing.T) {
+	card := newFakeCard()
+	if err := card.savePending(context.Background(), "confirm-track", &pendingConfirm{CallId: "call-1", UserId: "u1"}); err != nil {
+		t.Fatalf("savePending() error = %v", err)
+	}
+	b := newTestBot(card, &fakeChat{})
+
+	note := b.discard(context.Background(), "u1")
+	if !strings.Contains(note, "已开始新的对话") {
+		t.Errorf("discard() = %q, want a new-conversation notice", note)
+	}
+	if card.pendingCount() != 0 {
+		t.Errorf("pendingCount = %d, want confirmations cleared", card.pendingCount())
+	}
+	if !strings.Contains(card.lastCard(), "已随对话取消") {
+		t.Errorf("card = %q, want the leftover confirm card marked cancelled", card.lastCard())
+	}
+}
+
 // 待答问题和待确认调用来自同一次会话加载：全历史查询在长会话里不便宜，路由判断
 // 不该为此读两遍。收尾时要看运行之后的最新状态，那次是必须的。
 func TestPendingLoadedOncePerMessage(t *testing.T) {

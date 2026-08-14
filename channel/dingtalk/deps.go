@@ -20,6 +20,7 @@ type cardStore interface {
 	NewOutTrackId() string
 	DeliverConfirm(ctx context.Context, outTrackId string, meta msgMeta, content string) (string, error)
 	StreamingUpdate(ctx context.Context, outTrackId, content string, finished bool)
+	UpdateParams(ctx context.Context, outTrackId string, params map[string]string) error
 
 	savePending(ctx context.Context, outTrackId string, p *pendingConfirm) error
 	loadPending(ctx context.Context, outTrackId string) (*pendingConfirm, error)

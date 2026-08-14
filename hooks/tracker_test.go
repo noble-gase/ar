@@ -26,8 +26,6 @@ type testAgentContext struct {
 	userID       string
 	sessionID    string
 	branch       string
-	path         string
-	runID        string
 }
 
 func (c *testAgentContext) Deadline() (time.Time, bool) { return c.base.Deadline() }
@@ -39,8 +37,6 @@ func (c *testAgentContext) AgentName() string           { return c.agentName }
 func (c *testAgentContext) UserID() string              { return c.userID }
 func (c *testAgentContext) SessionID() string           { return c.sessionID }
 func (c *testAgentContext) Branch() string              { return c.branch }
-func (c *testAgentContext) Path() string                { return c.path }
-func (c *testAgentContext) RunID() string               { return c.runID }
 
 func newTrackerContext(invocationID, agentName string) *testAgentContext {
 	return &testAgentContext{
@@ -50,7 +46,6 @@ func newTrackerContext(invocationID, agentName string) *testAgentContext {
 		userID:       "u1",
 		sessionID:    "s1",
 		branch:       agentName,
-		path:         agentName,
 	}
 }
 

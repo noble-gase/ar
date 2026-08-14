@@ -22,6 +22,13 @@ func testConfirmCard() *ConfirmCard {
 	}
 }
 
+func withHide(card *ConfirmCard) *ConfirmCard {
+	card.StatusKey = "status"
+	card.Approve.Status = "approve"
+	card.Reject.Status = "reject"
+	return card
+}
+
 func cardRequest(outTrackId, userId string, params map[string]any, actionIds ...string) *card.CardRequest {
 	req := &card.CardRequest{OutTrackId: outTrackId, UserId: userId}
 	req.CardActionData.CardPrivateData.Params = params
@@ -84,14 +91,16 @@ func TestConfirmApprovedResumesTool(t *testing.T) {
 	if got.callId != "call-1" || !got.approved {
 		t.Errorf("Confirm(%q, %v), want (call-1, true)", got.callId, got.approved)
 	}
-	waitFor(t, "the confirmation to be completed", func() bool { return cardStore.pendingCount() == 0 })
-	if !strings.Contains(resp.CardData.CardParamMap["content"], "已同意") {
-		t.Errorf("card content = %q, want an approval notice", resp.CardData.CardParamMap["content"])
+	waitFor(t, "the confirmation to be completed", func() bool {
+		return cardStore.pendingCount() == 0 && strings.Contains(cardStore.lastCard(), "✅")
+	})
+	if resp.CardData != nil {
+		t.Errorf("sync card data = %v, want empty: the handler must not write content that can overwrite the final state", resp.CardData)
 	}
 }
 
 func TestConfirmRejected(t *testing.T) {
-	b, _, chat := confirmBot(t)
+	b, cardStore, chat := confirmBot(t)
 
 	resp, err := b.confirmCardHandler(context.Background(), cardRequest("track-1", "u1", map[string]any{"action": "reject"}))
 	if err != nil {
@@ -101,8 +110,11 @@ func TestConfirmRejected(t *testing.T) {
 	if got := awaitConfirm(t, chat); got.approved {
 		t.Error("Confirm() approved = true, want false")
 	}
-	if !strings.Contains(resp.CardData.CardParamMap["content"], "已拒绝") {
-		t.Errorf("card content = %q, want a rejection notice", resp.CardData.CardParamMap["content"])
+	waitFor(t, "the confirmation to be completed", func() bool {
+		return strings.Contains(cardStore.lastCard(), "❌")
+	})
+	if resp.CardData != nil {
+		t.Errorf("sync card data = %v, want empty: the handler must not write content that can overwrite the final state", resp.CardData)
 	}
 }
 
@@ -300,43 +312,51 @@ func TestMissingConfirmationAfterSameDayResetExpiresCard(t *testing.T) {
 	}
 }
 
-// 回答卡还没建起来就 panic：此时只有确认卡需要收尾，但它必须被收尾，
-// 否则会永远停在「处理中」。
-func TestPanicBeforeAnswerCardSettlesConfirmCard(t *testing.T) {
-	b, cardStore, _ := confirmBot(t)
+// 回答卡还没建起来就 panic：Confirm 尚未生效，整段会话必须丢掉，否则会停在确认态。
+func TestPanicBeforeAnswerCardAbortsSession(t *testing.T) {
+	b, cardStore, chat := confirmBot(t)
 	cardStore.panicOnDeliver = true
 
 	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
 
-	if !strings.Contains(cardStore.lastCard(), "请重新点击") {
-		t.Errorf("card = %q, want the confirmation card settled after an early panic", cardStore.lastCard())
+	if chat.resetCalls != 1 {
+		t.Errorf("resetCalls = %d, want the conversation discarded", chat.resetCalls)
 	}
-	if cardStore.pendingCount() != 1 {
-		t.Errorf("pendingCount = %d, want the record kept so the user can retry", cardStore.pendingCount())
+	if cardStore.pendingCount() != 0 {
+		t.Errorf("pendingCount = %d, want the confirmation cleared with the session", cardStore.pendingCount())
+	}
+	if !strings.Contains(cardStore.lastCard(), "已开始新的对话") {
+		t.Errorf("card = %q, want the user told to start over", cardStore.lastCard())
 	}
 }
 
 // panic 时两张卡都要收尾：只收回答卡的话，确认卡会永远停在「处理中」。
-func TestPanicSettlesConfirmCard(t *testing.T) {
+func TestPanicAbortsConfirmCard(t *testing.T) {
 	b, cardStore, chat := confirmBot(t)
 	chat.panicOnConfirm = true
 
 	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
 
-	if !strings.Contains(cardStore.lastCard(), "请重新点击") {
+	if !strings.Contains(cardStore.lastCard(), "已开始新的对话") {
 		t.Errorf("card = %q, want the confirmation card settled after a panic", cardStore.lastCard())
+	}
+	if chat.resetCalls != 1 {
+		t.Errorf("resetCalls = %d, want the conversation discarded", chat.resetCalls)
 	}
 }
 
-// 恢复过程中 panic 时，确认记录必须保留，用户可以再点一次。
-func TestConfirmPanicKeepsPending(t *testing.T) {
+// Confirm 返回前就 panic：决定还没写进会话，必须丢掉整段对话，不能邀请原卡重试。
+func TestConfirmPanicAbortsSession(t *testing.T) {
 	b, cardStore, chat := confirmBot(t)
 	chat.panicOnConfirm = true
 
 	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
 
-	if cardStore.pendingCount() != 1 {
-		t.Errorf("pendingCount = %d, want the confirmation still actionable", cardStore.pendingCount())
+	if cardStore.pendingCount() != 0 {
+		t.Errorf("pendingCount = %d, want the confirmation cleared", cardStore.pendingCount())
+	}
+	if chat.resetCalls != 1 {
+		t.Errorf("resetCalls = %d, want the conversation discarded", chat.resetCalls)
 	}
 }
 
@@ -371,22 +391,24 @@ func TestStreamFailureDoesNotReplayParent(t *testing.T) {
 	}
 }
 
-// ADK 还没被调用就失败时，确认必须能重来：记录原样保留，原卡片提示用户再点一次。
-// 按钮从不隐藏，所以不需要「另投一张确认卡」这条补偿链路。
-func TestRetryOnOriginalCardWhenResumeNotStarted(t *testing.T) {
+// ADK 还没被调用就失败时，会话仍停在确认态：保留 pending，让用户再点一次。
+func TestResumeNotStartedKeepsSession(t *testing.T) {
 	b, cardStore, chat := confirmBot(t)
 	cardStore.deliverErr = errRedisDown
 
 	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
 
+	if chat.resetCalls != 0 {
+		t.Errorf("resetCalls = %d, want no reset before Confirm", chat.resetCalls)
+	}
 	if cardStore.pendingCount() != 1 {
 		t.Errorf("pendingCount = %d, want the confirmation still actionable", cardStore.pendingCount())
 	}
 	if cardStore.deliveredConfirms() != 0 {
-		t.Errorf("deliveredConfirms = %d, want no extra card: the original buttons still work", cardStore.deliveredConfirms())
+		t.Errorf("deliveredConfirms = %d, want no extra confirm card", cardStore.deliveredConfirms())
 	}
 	if !strings.Contains(cardStore.lastCard(), "请重新点击") {
-		t.Errorf("card = %q, want the original card to invite a retry", cardStore.lastCard())
+		t.Errorf("card = %q, want a retry on the original card", cardStore.lastCard())
 	}
 	select {
 	case got := <-chat.confirmed:
@@ -395,9 +417,43 @@ func TestRetryOnOriginalCardWhenResumeNotStarted(t *testing.T) {
 	}
 }
 
-// 用户忙时确认同样原样保留，提示等上一条消息完成后重点，而不是按故障处理。
+// Confirm 已经调用但失败：会话状态可能已经含糊，丢掉整段对话。
+func TestConfirmErrorAbortsSession(t *testing.T) {
+	b, cardStore, chat := confirmBot(t)
+	chat.confirmErr = errRedisDown
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
+
+	if chat.resetCalls != 1 {
+		t.Errorf("resetCalls = %d, want the conversation discarded", chat.resetCalls)
+	}
+	if cardStore.pendingCount() != 0 {
+		t.Errorf("pendingCount = %d, want the confirmation cleared with the session", cardStore.pendingCount())
+	}
+	if !strings.Contains(cardStore.lastCard(), "已开始新的对话") {
+		t.Errorf("card = %q, want the user told to start over", cardStore.lastCard())
+	}
+}
+
+// ResetAutomatic 也失败时不能清 pending：会话仍停在确认态，用户只能回复「取消」。
+func TestAbortKeepsPendingWhenResetFails(t *testing.T) {
+	b, cardStore, chat := confirmBot(t)
+	chat.confirmErr = errRedisDown
+	chat.resetErr = errRedisDown
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
+
+	if cardStore.pendingCount() != 1 {
+		t.Errorf("pendingCount = %d, want the confirmation kept so cancel still works", cardStore.pendingCount())
+	}
+	if !strings.Contains(cardStore.lastCard(), "请回复「取消」") {
+		t.Errorf("card = %q, want the user pointed at cancel", cardStore.lastCard())
+	}
+}
+
+// 用户忙时确认原样保留，提示等上一条消息完成后重点，而不是丢掉会话。
 func TestConfirmBusyPromptsRetryAfterCurrentRun(t *testing.T) {
-	b, cardStore, _ := confirmBot(t)
+	b, cardStore, chat := confirmBot(t)
 	cardStore.lockErr = userlock.ErrBusy
 
 	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
@@ -405,14 +461,17 @@ func TestConfirmBusyPromptsRetryAfterCurrentRun(t *testing.T) {
 	if cardStore.pendingCount() != 1 {
 		t.Errorf("pendingCount = %d, want the confirmation preserved while busy", cardStore.pendingCount())
 	}
+	if chat.resetCalls != 0 {
+		t.Errorf("resetCalls = %d, want no reset while another run holds the lock", chat.resetCalls)
+	}
 	if !strings.Contains(cardStore.lastCard(), "还在处理中") {
 		t.Errorf("card = %q, want a busy notice", cardStore.lastCard())
 	}
 }
 
-// 拿不到用户锁时同样什么都没做，原卡片要能重试。
+// 拿不到用户锁时同样什么都没做，原卡片要能重试，也不能覆盖已写上的终态。
 func TestRetryOnOriginalCardWhenLockUnavailable(t *testing.T) {
-	b, cardStore, _ := confirmBot(t)
+	b, cardStore, chat := confirmBot(t)
 	cardStore.lockErr = errRedisDown
 
 	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
@@ -420,20 +479,116 @@ func TestRetryOnOriginalCardWhenLockUnavailable(t *testing.T) {
 	if cardStore.pendingCount() != 1 {
 		t.Errorf("pendingCount = %d, want the confirmation preserved", cardStore.pendingCount())
 	}
+	if chat.resetCalls != 0 {
+		t.Errorf("resetCalls = %d, want no reset without the lock", chat.resetCalls)
+	}
 	if !strings.Contains(cardStore.lastCard(), "请重新点击") {
 		t.Errorf("card = %q, want the original card to invite a retry", cardStore.lastCard())
 	}
 }
 
-// 同步响应只把文案改成「处理中」：此刻后台还没开始恢复，不能显示成已完成。
-func TestSyncResponseShowsProcessing(t *testing.T) {
-	resp := confirmStatusResponse(processingText(true))
-	content := resp.CardData.CardParamMap["content"]
-	if !strings.Contains(content, "正在执行") {
-		t.Errorf("content = %q, want a processing state", content)
+// Redis 读失败时 Confirm 还没调用，和没抢到锁同类：保留会话，让用户再点，不能 ResetAutomatic。
+func TestReloadPendingFailureKeepsSession(t *testing.T) {
+	b, cardStore, chat := confirmBot(t)
+	cardStore.loadErr = errRedisDown
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
+
+	if chat.resetCalls != 0 {
+		t.Errorf("resetCalls = %d, want no reset on a redis blip before Confirm", chat.resetCalls)
 	}
-	if len(resp.CardData.CardParamMap) != 1 {
-		t.Errorf("params = %v, want only the content: buttons must stay usable for retries", resp.CardData.CardParamMap)
+	if cardStore.pendingCount() != 1 {
+		t.Errorf("pendingCount = %d, want the confirmation preserved", cardStore.pendingCount())
+	}
+	if !strings.Contains(cardStore.lastCard(), "请重新点击") {
+		t.Errorf("card = %q, want a retry on the original card", cardStore.lastCard())
+	}
+	select {
+	case got := <-chat.confirmed:
+		t.Fatalf("Confirm ran despite the pending reload failure: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// 只配了 Approve.Status 时，拒绝不能回退写成 approve，否则卡片会显示成「已同意」。
+func TestRejectDoesNotBorrowApproveStatus(t *testing.T) {
+	b, cardStore, chat := confirmBot(t)
+	b.confirm.StatusKey = "status"
+	b.confirm.Approve.Status = "approve"
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", false)
+
+	select {
+	case got := <-chat.confirmed:
+		if got.approved {
+			t.Fatalf("Confirm approved = true, want false: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Confirm was never called")
+	}
+	waitFor(t, "the confirmation to be completed", func() bool { return cardStore.pendingCount() == 0 })
+	if got := cardStore.lastParams(); got["status"] != "" {
+		t.Errorf("params = %v, want no status written for a reject without Reject.Status", got)
+	}
+}
+
+// 同步响应不改卡片：钉钉在回调返回后才应用它，写「处理中」会盖掉已经跑完的终态。
+func TestSyncResponseDoesNotUpdateCard(t *testing.T) {
+	b, _, _ := confirmBot(t)
+	withHide(b.confirm)
+
+	resp, err := b.confirmCardHandler(context.Background(), cardRequest("track-1", "u1", map[string]any{"action": "approve"}))
+	if err != nil {
+		t.Fatalf("confirmCardHandler() error = %v", err)
+	}
+	if resp == nil {
+		t.Fatal("confirmCardHandler() response = nil")
+	}
+	if resp.CardData != nil {
+		t.Errorf("card data = %v, want no sync card update", resp.CardData)
+	}
+}
+
+// 没抢到锁时不能藏按钮，用户还得再点一次。
+func TestLockFailureDoesNotHideButtons(t *testing.T) {
+	b, cardStore, _ := confirmBot(t)
+	withHide(b.confirm)
+	cardStore.lockErr = errRedisDown
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
+
+	if got := cardStore.lastParams(); got["status"] != "" {
+		t.Errorf("params = %v, want buttons left visible when the lock could not be taken", got)
+	}
+}
+
+// 终态要藏按钮：这次确认已经落定，再点也不该生效。
+func TestSettledConfirmHidesButtons(t *testing.T) {
+	b, cardStore, chat := confirmBot(t)
+	withHide(b.confirm)
+
+	if _, err := b.confirmCardHandler(context.Background(), cardRequest("track-1", "u1", map[string]any{"action": "approve"})); err != nil {
+		t.Fatalf("confirmCardHandler() error = %v", err)
+	}
+	awaitConfirm(t, chat)
+	waitFor(t, "the confirmation to be completed and buttons hidden", func() bool {
+		return cardStore.pendingCount() == 0 && cardStore.lastParams()["status"] == "approve"
+	})
+}
+
+// Confirm 失败丢掉会话后，被点的那张卡写入这次决定的 Status 以藏按钮。
+func TestAbortHidesButtons(t *testing.T) {
+	b, cardStore, chat := confirmBot(t)
+	withHide(b.confirm)
+	chat.confirmErr = errRedisDown
+
+	b.resumeConfirmed(context.Background(), msgMeta{userId: "u1"}, "track-1", true)
+
+	if chat.resetCalls != 1 {
+		t.Errorf("resetCalls = %d, want the conversation discarded", chat.resetCalls)
+	}
+	if got := cardStore.lastParams()["status"]; got != "approve" {
+		t.Errorf("params = %v, want the clicked decision written so buttons stay hidden", cardStore.lastParams())
 	}
 }
 
@@ -494,12 +649,15 @@ func TestCancelInvalidatesConfirmations(t *testing.T) {
 	card.savePending(context.Background(), "track-1", &pendingConfirm{CallId: "call-1", UserId: "u1"})
 	chat := &fakeChat{pending: []*llmchat.RequestInput{{InterruptId: "a", Message: "问题 A"}}}
 	b := newTestBot(card, chat)
-	b.confirm = testConfirmCard()
+	b.confirm = withHide(testConfirmCard())
 
 	b.streamAnswer(context.Background(), msgMeta{userId: "u1"}, "/cancel", "track")
 
 	if card.pendingCount() != 0 {
 		t.Fatalf("pendingCount = %d, want confirmations invalidated with the session", card.pendingCount())
+	}
+	if got := card.lastParams(); got["status"] != "" {
+		t.Errorf("params = %v, want cancel not to write a reject/approve status", got)
 	}
 
 	// 旧卡片再点也不应恢复任何东西

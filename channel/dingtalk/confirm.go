@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"runtime/debug"
 	"strings"
 
@@ -19,13 +20,20 @@ import (
 // ConfirmCard 配置人工确认卡片。决定值会与 params[ParamKey] 和回调的 action id
 // 做大小写不敏感匹配。
 type ConfirmCard struct {
-	// TemplateId 是人工确认卡片使用的模板。它必须有两个按钮，回调时通过 params
-	// 里的值或 action id 上报用户的决定。留空则使用 Config.CardTemplateId。
+	// TemplateId 是人工确认卡片使用的模板，必填。它必须有两个按钮，回调时通过
+	// params 里的值或 action id 上报用户的决定。正文变量 `content` 必须是普通模板
+	// 变量（不是流式变量）：投放时写入 prompt，之后用 UpdateCard 按 key 更新。
 	TemplateId string
 
 	// ParamKey 是承载决定值的 params 键名（如 "action"）。留空则跳过按参数解析，
 	// 只依据 action id。
 	ParamKey string
+
+	// StatusKey 是模板里承载卡片状态的变量名（如 "status"），模板靠它决定按钮是否
+	// 显示。只在终态写入对应决定的 Status（成功、过期、失败并开始新对话）。
+	// 同步点击和锁忙不改状态，按钮保持可点，避免藏死却恢复失败把用户卡住。
+	// 留空则不改模板变量。
+	StatusKey string
 
 	// Approve 描述「同意」这个决定。
 	Approve ConfirmAction
@@ -35,13 +43,14 @@ type ConfirmCard struct {
 }
 
 // ConfirmAction 描述一个确认决定（同意或拒绝）。
-//
-// 卡片按钮不会被隐藏：后台恢复失败时用户要能在原卡上重试，所以这里不提供
-// 「回写模板变量」的口子，避免被配置成点一次就永久失效。
 type ConfirmAction struct {
 	// Value 是选中这个决定所用的 params[ParamKey] 值或 action id
 	// （大小写不敏感匹配）。
 	Value string
+
+	// Status 是该决定落到终态时写入 ConfirmCard.StatusKey 的值（如 "approve"），
+	// 用来隐藏按钮。留空则这个决定不改卡片状态。
+	Status string
 }
 
 // requestConfirmation 投放带同意/拒绝按钮的确认卡片，并把待确认状态持久化，
@@ -98,7 +107,7 @@ func (b *Bot) requestConfirmation(ctx context.Context, meta msgMeta, outTrackId,
 // resumeConfirmed 的用户锁内完成，否则「取消」「重复点击」「恢复」会各自
 // 修改状态而互相踩踏。
 func (b *Bot) confirmCardHandler(ctx context.Context, req *card.CardRequest) (*card.CardResponse, error) {
-	ctx = helper.CtxWithTraceId(ctx)
+	ctx = helper.CtxWithTraceID(ctx)
 
 	slog.InfoContext(ctx, "[dingtalk confirm] card request", slog.Any("req", req))
 
@@ -143,31 +152,39 @@ func (b *Bot) confirmCardHandler(ctx context.Context, req *card.CardRequest) (*c
 		return confirmStatusResponse("> ⚠️ 服务正在停止，请稍后重新点击。"), nil
 	}
 
-	// 同步返回卡片更新：只把文案改成「处理中」，刻意不隐藏按钮——后台恢复此刻
-	// 尚未开始，一旦失败得让用户能在原卡上重试。最终状态由后台恢复结束后写回，
-	// 重复点击不会重复执行：锁内的记录存在性检查会挡住。
-	return confirmStatusResponse(processingText(approved)), nil
+	// 同步不改卡片。钉钉在回调返回之后才应用 CardResponse，若这里写「处理中」，
+	// 会盖掉已经跑完的终态（过期、已处理等快速分支），按钮又被藏掉，用户没有出路。
+	// 「处理中」改由 resumeConfirmed 抢到锁、确认记录仍在之后写。
+	return &card.CardResponse{}, nil
 }
 
 // resumeConfirmed 在用户锁内完成一次确认的全部状态变更。
 //
-// 锁内顺序：重新读取记录（可能已被取消清理或已被上一次点击处理）→ 投放回答卡片
-// → 恢复 ADK → 删除记录或重投确认卡。因为和聊天消息、取消共用同一把锁，
-// 三者不会交叉；记录的存在性本身就是幂等闸门，不需要额外的租约。
+// 锁内顺序：重新读取记录（可能已被取消清理或已被上一次点击处理）→ 写「处理中」
+// → 投放回答卡片 → 恢复 ADK → 删除记录或整段丢弃会话。因为和聊天消息、取消
+// 共用同一把锁，三者不会交叉；记录的存在性本身就是幂等闸门，不需要额外的租约。
 func (b *Bot) resumeConfirmed(ctx context.Context, meta msgMeta, confirmTrackId string, approved bool) {
 	// 回答卡可能还没建起来，所以收尾几张取决于 panic 时进行到哪一步
 	answerTrackId := ""
-	defer func() {
-		if r := recover(); r != nil {
-			slog.ErrorContext(ctx, "[dingtalk confirm] panic", slog.Any("error", r), slog.String("stack", string(debug.Stack())))
-			if answerTrackId != "" {
-				b.settle(ctx, answerTrackId, "> ⚠️ 执行过程中出现内部错误，请稍后重试")
-			}
-			b.settle(ctx, confirmTrackId, confirmRetryText)
-		}
-	}()
 
 	err := b.locked(ctx, meta.userId, func(ctx context.Context) {
+		// recover 必须在锁内：abortConfirm 要 ResetAutomatic，不能在解锁后跑。
+		resumed := false
+		defer func() {
+			if r := recover(); r != nil {
+				slog.ErrorContext(ctx, "[dingtalk confirm] panic", slog.Any("error", r), slog.String("stack", string(debug.Stack())))
+				if answerTrackId != "" {
+					b.settle(ctx, answerTrackId, "> ⚠️ 执行过程中出现内部错误，请稍后重试")
+				}
+				if resumed {
+					b.dropConfirm(ctx, confirmTrackId, meta.userId)
+					b.finishConfirm(ctx, confirmTrackId, "> ⚠️ 执行未能完成，请重新发起对话。", approved)
+					return
+				}
+				b.abortConfirm(ctx, meta.userId, confirmTrackId, approved)
+			}
+		}()
+
 		// 锁内重新读取：并发点击的第二次、以及会话已被重置的情况都会在这里被挡住
 		pending, err := b.card.loadPending(ctx, confirmTrackId)
 		if err != nil {
@@ -179,15 +196,18 @@ func (b *Bot) resumeConfirmed(ctx context.Context, meta msgMeta, confirmTrackId 
 				return
 			}
 			slog.ErrorContext(ctx, "[dingtalk confirm] reload pending confirmation failed", slog.String("error", err.Error()), slog.String("outTrackId", confirmTrackId))
-			b.settle(ctx, confirmTrackId, confirmRetryText)
+			b.keepConfirm(ctx, confirmTrackId, confirmRetryText)
 			return
 		}
 
+		b.updateConfirm(ctx, confirmTrackId, processingText(approved), "")
+
 		outTrackId, err := b.deliverCard(ctx, meta)
 		if err != nil {
-			// ADK 还没被调用，记录原样保留，用户在原卡上再点一次即可
+			// Confirm 还没调用，会话仍停在确认态。发卡失败多是限流/抖动，再点一次
+			// 是安全的，不能为此 ResetAutomatic 毁掉整段对话。
 			slog.ErrorContext(ctx, "[dingtalk confirm] card create and deliver failed", slog.String("error", err.Error()), slog.Any("meta", meta), slog.String("callId", pending.CallId))
-			b.settle(ctx, confirmTrackId, confirmRetryText)
+			b.keepConfirm(ctx, confirmTrackId, confirmRetryText)
 			return
 		}
 		answerTrackId = outTrackId
@@ -198,7 +218,7 @@ func (b *Bot) resumeConfirmed(ctx context.Context, meta msgMeta, confirmTrackId 
 			slog.InfoContext(ctx, "[dingtalk confirm] confirmation expired", slog.String("outTrackId", confirmTrackId), slog.String("callId", pending.CallId), slog.String("sessionId", pending.SessionId))
 			b.dropConfirm(ctx, confirmTrackId, meta.userId)
 			b.settle(ctx, outTrackId, expiredText)
-			b.settle(ctx, confirmTrackId, expiredText)
+			b.finishConfirm(ctx, confirmTrackId, expiredText, approved)
 			return
 		}
 		if errors.Is(err, llmchat.ErrAlreadyConfirmed) {
@@ -207,7 +227,7 @@ func (b *Bot) resumeConfirmed(ctx context.Context, meta msgMeta, confirmTrackId 
 			slog.InfoContext(ctx, "[dingtalk confirm] confirmation already answered", slog.String("outTrackId", confirmTrackId), slog.String("callId", pending.CallId))
 			b.dropConfirm(ctx, confirmTrackId, meta.userId)
 			b.settle(ctx, outTrackId, "> ℹ️ 这次确认已经处理过了。")
-			b.settle(ctx, confirmTrackId, "> ℹ️ 这次确认已经处理过了。")
+			b.finishConfirm(ctx, confirmTrackId, "> ℹ️ 这次确认已经处理过了。", approved)
 			return
 		}
 		if errors.Is(err, llmchat.ErrConfirmationNotFound) {
@@ -216,19 +236,19 @@ func (b *Bot) resumeConfirmed(ctx context.Context, meta msgMeta, confirmTrackId 
 			slog.InfoContext(ctx, "[dingtalk confirm] confirmation no longer pending", slog.String("outTrackId", confirmTrackId), slog.String("callId", pending.CallId))
 			b.dropConfirm(ctx, confirmTrackId, meta.userId)
 			b.settle(ctx, outTrackId, staleConfirmText)
-			b.settle(ctx, confirmTrackId, staleConfirmText)
+			b.finishConfirm(ctx, confirmTrackId, staleConfirmText, approved)
 			return
 		}
 		if err != nil {
-			// 同上：ADK 尚未开始恢复，这次确认还可以重来
 			slog.ErrorContext(ctx, "[dingtalk confirm] resume failed", slog.String("error", err.Error()), slog.String("outTrackId", confirmTrackId), slog.String("callId", pending.CallId))
-			b.settle(ctx, outTrackId, "> ⚠️ 出现错误："+err.Error())
-			b.settle(ctx, confirmTrackId, confirmRetryText)
+			note := b.abortConfirm(ctx, meta.userId, confirmTrackId, approved)
+			b.settle(ctx, outTrackId, "> ⚠️ 出现错误："+err.Error()+"\n\n"+note)
 			return
 		}
 
 		// 事件流一旦开始消费，ADK 就已经把这次决策写进会话，父 callId 不能再被重放：
 		// 后续无论成败，这条确认记录都必须作废，否则重试会重复执行同一个调用。
+		resumed = true
 		failed := b.handleAnswer(ctx, seq, meta, outTrackId, pending.SessionId)
 
 		// 清理只是为了让卡片不再可点；即便失败也不会重复执行工具，
@@ -237,29 +257,109 @@ func (b *Bot) resumeConfirmed(ctx context.Context, meta msgMeta, confirmTrackId 
 
 		if failed {
 			slog.ErrorContext(ctx, "[dingtalk confirm] resume completed with failure", slog.String("outTrackId", confirmTrackId), slog.String("callId", pending.CallId))
-			b.settle(ctx, confirmTrackId, "> ⚠️ 执行未能完成，请重新发起对话。")
+			b.finishConfirm(ctx, confirmTrackId, "> ⚠️ 执行未能完成，请重新发起对话。", approved)
 			return
 		}
-		b.settle(ctx, confirmTrackId, decisionText(approved))
+		b.finishConfirm(ctx, confirmTrackId, decisionText(approved), approved)
 	})
 	if err != nil {
-		// 没拿到锁，什么都没做：记录原样保留，提示用户重新点击
+		// 没拿到锁，什么都没做：不能 ResetAutomatic，也不能覆盖别人已经写上的终态。
 		slog.ErrorContext(ctx, "[dingtalk confirm] resume skipped: lock unavailable", slog.String("error", err.Error()), slog.String("outTrackId", confirmTrackId))
 		if errors.Is(err, userlock.ErrBusy) {
-			b.settle(ctx, confirmTrackId, "> ⏳ 上一条消息还在处理中，请等它完成后重新点击。")
+			b.keepConfirm(ctx, confirmTrackId, "> ⏳ 上一条消息还在处理中，请等它完成后重新点击。")
 			return
 		}
-		b.settle(ctx, confirmTrackId, confirmRetryText)
+		b.keepConfirm(ctx, confirmTrackId, confirmRetryText)
 	}
 }
 
-// confirmRetryText 是确认未生效时写回原卡片的文案。按钮始终保留，用户直接再点
-// 一次即可重试，因此不需要「失败后另投一张确认卡」这条补偿链路。
+// abortConfirm 在 Confirm 已经调用但没能恢复时丢掉整段自动会话。必须在用户锁内调用。
+func (b *Bot) abortConfirm(ctx context.Context, userId, confirmTrackId string, approved bool) string {
+	note := "> 已开始新的对话，请重新发起。"
+	if err := b.chat.ResetAutomatic(ctx, userId); err != nil {
+		slog.ErrorContext(ctx, "[dingtalk confirm] abort reset failed", slog.String("error", err.Error()), slog.String("userId", userId), slog.String("outTrackId", confirmTrackId))
+		// 会话仍停在确认态，按钮留着让用户重试
+		b.updateConfirm(ctx, confirmTrackId, confirmAbortResetFailedText, "")
+		return confirmAbortResetFailedText
+	}
+
+	ids, err := b.card.clearConfirms(ctx, userId)
+	b.settleCancelledConfirms(ctx, ids, confirmTrackId)
+	if err != nil {
+		slog.ErrorContext(ctx, "[dingtalk confirm] abort clear confirmations failed", slog.String("error", err.Error()), slog.String("userId", userId))
+	}
+
+	text := confirmAbortText + "\n\n" + note
+	b.finishConfirm(ctx, confirmTrackId, text, approved)
+	return text
+}
+
+// keepConfirm 写回“请重新点击”类文案，但不改按钮状态、也不动会话。用于没抢到
+// 锁、以及 Confirm 尚未调用（Redis 读失败、发卡失败）的分支。记录若已不在，
+// 说明别人已经收尾，绝不能覆盖终态。
+func (b *Bot) keepConfirm(ctx context.Context, confirmTrackId, content string) {
+	_, err := b.card.loadPending(ctx, confirmTrackId)
+	if errors.Is(err, redis.Nil) {
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "[dingtalk confirm] keep pending check failed", slog.String("error", err.Error()), slog.String("outTrackId", confirmTrackId))
+	}
+	b.updateConfirm(ctx, confirmTrackId, content, "")
+}
+
+// finishConfirm 一次写完确认卡的终态文案和状态，不会出现“文案已终态、按钮还在”
+// 的中间态。写失败不影响正确性：pending 已清理，再点是空操作。
+func (b *Bot) finishConfirm(ctx context.Context, confirmTrackId, content string, approved bool) {
+	b.updateConfirm(ctx, confirmTrackId, content, b.decisionStatus(approved))
+}
+
+// updateConfirm 更新确认卡。它的 content 是普通模板变量，只能按 key 更新，走不了
+// 回答卡那套流式接口。status 为空则不动状态变量，按钮保持原样。
+func (b *Bot) updateConfirm(ctx context.Context, confirmTrackId, content, status string) {
+	params := map[string]string{"content": content}
+	maps.Copy(params, b.statusParams(status))
+
+	// 和 settle 一样用独立 context：调用方的 ctx 可能已因丢锁或超时而取消
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cardSettleTimeout)
+	defer cancel()
+
+	if err := b.card.UpdateParams(ctx, confirmTrackId, params); err != nil {
+		slog.ErrorContext(ctx, "[dingtalk confirm] update confirm card failed", slog.String("error", err.Error()), slog.String("outTrackId", confirmTrackId))
+	}
+}
+
+// statusParams 把一个状态值包成卡片模板变量；StatusKey 或状态为空时不改模板变量。
+// 只写这次决定自己的 Status：回退到另一个决定会把「已拒绝」写成「已同意」的样式。
+func (b *Bot) statusParams(status string) map[string]string {
+	if b.confirm == nil || b.confirm.StatusKey == "" || status == "" {
+		return nil
+	}
+	return map[string]string{b.confirm.StatusKey: status}
+}
+
+const confirmAbortText = "> ⚠️ 这次确认未能生效。"
+
+const confirmAbortResetFailedText = "> ⚠️ 这次确认未能生效，且无法开始新对话，请回复「取消」。"
+
+// confirmRetryText 只用于没抢到锁、会话仍停在确认态的提示。锁内失败会直接开始新对话。
 const confirmRetryText = "> ⚠️ 上一次确认未能生效，请重新点击。"
 
 const staleConfirmText = "> ℹ️ 这次确认已失效或已经处理，请重新发起。"
 
 const cancelledConfirmText = "> ℹ️ 这次确认已随对话取消。"
+
+// settleCancelledConfirms 把连带清掉的确认卡写成取消文案。skip 是这次要点名
+// 另写终态的卡片（abort 自己的那张），空串表示全部都写取消。
+func (b *Bot) settleCancelledConfirms(ctx context.Context, trackIds []string, skip string) {
+	for _, id := range trackIds {
+		if id == skip {
+			continue
+		}
+		// 取消不是拒绝，不能借用 Reject.Status；pending 已清，再点是空操作。
+		b.updateConfirm(ctx, id, cancelledConfirmText, "")
+	}
+}
 
 // expiredText 用于自动会话已轮换、这次确认不再可恢复的情况。和 confirmRetryText
 // 相反，这里不能邀请用户重试——再点多少次都不会生效。
@@ -272,7 +372,7 @@ func (b *Bot) dropConfirm(ctx context.Context, confirmTrackId, userId string) {
 	}
 }
 
-// confirmStatusResponse 构造按钮点击后的同步卡片更新，只改文案、不动按钮。
+// confirmStatusResponse 构造按钮点击后的同步卡片更新，只改文案、不藏按钮。
 func confirmStatusResponse(content string) *card.CardResponse {
 	return &card.CardResponse{
 		CardUpdateOptions: &card.CardUpdateOptions{UpdateCardDataByKey: true},
@@ -280,6 +380,17 @@ func confirmStatusResponse(content string) *card.CardResponse {
 			"content": content,
 		}},
 	}
+}
+
+// decisionStatus 返回做出该决定后卡片要切到的状态。
+func (b *Bot) decisionStatus(approved bool) string {
+	if b.confirm == nil {
+		return ""
+	}
+	if approved {
+		return b.confirm.Approve.Status
+	}
+	return b.confirm.Reject.Status
 }
 
 func processingText(approved bool) string {

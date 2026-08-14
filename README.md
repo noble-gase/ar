@@ -394,7 +394,7 @@ for event, err := range events {
 }
 ```
 
-钉钉渠道已内置确认卡片，通过 `dingtalk.Config.ConfirmCard` 配置模板与按钮取值规则：
+钉钉渠道已内置确认卡片，通过 `dingtalk.Config.ConfirmCard` 配置模板、按钮取值规则与终态样式：
 
 ```go
 cfg := &dingtalk.Config{
@@ -402,15 +402,26 @@ cfg := &dingtalk.Config{
 	ClientSecret:   "clientSecret",
 	CardTemplateId: "xxxxxx.schema",
 	ConfirmCard: &dingtalk.ConfirmCard{
-		TemplateId: "yyyyyy.schema", // 留空则复用 CardTemplateId
+		TemplateId: "yyyyyy.schema", // 必填，不能复用 CardTemplateId
 		ParamKey:   "action",
-		Approve:    dingtalk.ConfirmAction{Value: "approve"},
-		Reject:     dingtalk.ConfirmAction{Value: "reject"},
+		StatusKey:  "status", // 可选：模板靠它决定按钮是否显示
+		Approve:    dingtalk.ConfirmAction{Value: "approve", Status: "approve"},
+		Reject:     dingtalk.ConfirmAction{Value: "reject", Status: "reject"},
 	},
 	Timeout:       time.Hour,        // 单次运行（LLM + 工具调用）总时长上限，默认 1 小时
 	ShutdownGrace: 15 * time.Second, // 停机时让在途消息自然跑完的宽限期，默认 15 秒
 }
 ```
+
+两个模板不通用，`ConfirmCard.TemplateId` 缺失会在启动时报错：
+
+|                | 回答卡（`CardTemplateId`） | 确认卡（`ConfirmCard.TemplateId`）                    |
+| -------------- | -------------------------- | ----------------------------------------------------- |
+| 正文 `content` | 流式变量，边生成边推送     | 普通变量，按 key 更新                                 |
+| 按钮           | 无                         | 同意 / 拒绝两个，回调上报 `ParamKey` 的值或 action id |
+| `StatusKey`    | 无                         | 可选；未赋值时必须显示按钮                            |
+
+`StatusKey` + `Status` 用来在确认落定后隐藏按钮，避免用户反复点击：投卡时不写状态，只有终态（执行完成、已过期、已处理、丢弃会话）才连同文案一次写入这次决定的 `Status`。没抢到锁、Redis 读失败、发卡失败这些「确认还没生效」的分支不会改状态，用户可以在原卡上直接重试；用户回复「取消」时也只改文案，不借用 `Reject.Status` 把取消渲染成拒绝。不配 `StatusKey`/`Status` 则按钮始终可点，重复点击由会话历史挡住，不会重复执行工具。
 
 `Stop` 会先停止接收，再等在途消息自然结束；超过 `ShutdownGrace` 才发出取消。有上限的只是这段自然排空——取消之后 `Stop` 仍会等 handler 真正退出，因为 Go 杀不死 goroutine，提前返回并关闭卡片客户端只会让残留任务写已关闭的资源。完全忽略 context 的任务只能由进程管理器（如 Kubernetes 的 `terminationGracePeriodSeconds`）兜底，把它配得比 `ShutdownGrace` 长。
 

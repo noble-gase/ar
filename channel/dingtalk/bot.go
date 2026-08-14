@@ -177,7 +177,7 @@ func (b *Bot) settle(ctx context.Context, outTrackId, content string) {
 }
 
 func (b *Bot) messageHandler(ctx context.Context, data *chatbot.BotCallbackDataModel) ([]byte, error) {
-	ctx = helper.CtxWithTraceId(ctx)
+	ctx = helper.CtxWithTraceID(ctx)
 
 	slog.InfoContext(ctx, "[dingtalk bot] chat message", slog.Any("data", data))
 
@@ -287,9 +287,7 @@ func (b *Bot) cancelPending(ctx context.Context, meta msgMeta, outTrackId string
 
 	// 会话都没了，旧卡片上的按钮不能再去恢复一个已不存在的工具调用
 	confirmTrackIds, err := b.card.clearConfirms(ctx, meta.userId)
-	for _, trackId := range confirmTrackIds {
-		b.settle(ctx, trackId, cancelledConfirmText)
-	}
+	b.settleCancelledConfirms(ctx, confirmTrackIds, "")
 	if err != nil {
 		slog.ErrorContext(ctx, "[dingtalk bot] clear confirmations failed", slog.String("error", err.Error()), slog.String("userId", meta.userId))
 		b.settle(ctx, outTrackId, "> 已开始新的对话。部分旧确认卡片可能没能变灰，点了也不会生效。")
@@ -398,7 +396,9 @@ func (b *Bot) discard(ctx context.Context, userId string) string {
 		slog.ErrorContext(ctx, "[dingtalk bot] discard conversation failed", slog.String("error", err.Error()), slog.String("userId", userId))
 		return "> ⚠️ 当前对话已无法继续，请回复「取消」重新开始。"
 	}
-	if _, err := b.card.clearConfirms(ctx, userId); err != nil {
+	ids, err := b.card.clearConfirms(ctx, userId)
+	b.settleCancelledConfirms(ctx, ids, "")
+	if err != nil {
 		slog.ErrorContext(ctx, "[dingtalk bot] clear confirmations failed", slog.String("error", err.Error()), slog.String("userId", userId))
 	}
 	return "> 已开始新的对话，请重新发起。"
