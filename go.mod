@@ -11,7 +11,7 @@ require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	github.com/noble-gase/neon v0.3.0
+	github.com/noble-gase/neon v0.3.1
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.2-beta.1
 	github.com/openai/openai-go/v3 v3.50.0
 	github.com/redis/go-redis/v9 v9.22.0
